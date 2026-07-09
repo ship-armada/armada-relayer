@@ -1,0 +1,30 @@
+# ABOUTME: Observability profile (spec §10.3, §11.1): prometheus + grafana. Runs LOCALLY only
+# ABOUTME: per ruling §17.2.3 — not deployed to the VPS; VPS alerting relies on /health checks.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.obs.yml --profile obs ...
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ["obs"]
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: ["obs"]
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  grafana-data:

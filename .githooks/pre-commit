@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# ABOUTME: Pre-commit hook enforcing the repo env-file convention: any staged *.env file
+# ABOUTME: must be on the ALLOWED_ENV_FILES list, so secrets.env can never be committed.
+set -euo pipefail
+
+ALLOWED_ENV_FILES=(
+  "relayer-v2/compose/local.env"
+  "relayer-v2/compose/sepolia.env"
+  "relayer-v2/compose/mainnet.env"
+  "relayer-v2/compose/secrets.env.example"
+)
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+fail=0
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  case "$f" in
+    *.env|*.env.*|.env*)
+      allowed=0
+      for a in "${ALLOWED_ENV_FILES[@]}"; do
+        [[ "$f" == "$a" ]] && allowed=1 && break
+      done
+      if [[ $allowed -eq 0 ]]; then
+        echo "BLOCKED: env file '$f' is not in ALLOWED_ENV_FILES (.githooks/pre-commit)." >&2
+        fail=1
+      fi
+      ;;
+  esac
+done <<< "$staged"
+
+# Sensitive-data sniff on staged content (private keys / mnemonics).
+if git diff --cached -U0 | grep -E '^\+' | grep -Eq '(0x[0-9a-fA-F]{64})[^0-9a-fA-F]*(PRIVATE|private_key|PRIVATE_KEY)|RELAYER_PRIVATE_KEY=0x[0-9a-fA-F]{64}|RELAYER_RAILGUN_MNEMONIC=[a-z]+( [a-z]+){11}'; then
+  echo "BLOCKED: staged content looks like a private key or mnemonic." >&2
+  fail=1
+fi
+
+exit $fail

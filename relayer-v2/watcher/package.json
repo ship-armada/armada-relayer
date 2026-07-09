@@ -1,0 +1,24 @@
+{
+  "name": "armada-watcher",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Armada relayer v2 watcher: Ponder-based chain indexer + public read API (spec §7)",
+  "scripts": {
+    "dev": "ponder dev",
+    "start": "ponder start --schema ${DATABASE_SCHEMA:-watcher} --views-schema ${VIEWS_SCHEMA:-indexed}",
+    "codegen": "ponder codegen",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "ponder": "0.16.8",
+    "viem": "^2.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

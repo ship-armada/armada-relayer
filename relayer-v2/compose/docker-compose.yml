@@ -1,0 +1,124 @@
+# ABOUTME: Relayer v2 stack (spec §11): postgres + watcher (no secrets, D2) + actor (keys).
+# ABOUTME: NETWORK env selects local|sepolia|mainnet; non-secret config via committed env files.
+name: armada-relayer-v2
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: armada
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in secrets.env or local.env}
+      WATCHER_DB_PASSWORD: ${WATCHER_DB_PASSWORD:?}
+      ACTOR_DB_PASSWORD: ${ACTOR_DB_PASSWORD:?}
+    # Conservative memory posture for a shared VPS (§11.1).
+    command: ["postgres", "-c", "shared_buffers=256MB", "-c", "max_connections=60"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d armada"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    # Not exposed outside the compose network (S4).
+
+  watcher:
+    build:
+      context: ../..
+      dockerfile: relayer-v2/watcher/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "42069:42069"
+    # D2/S1: NO secret env vars are passed to the watcher container. RPC URLs may embed a
+    # paid key (§11.1) — provide them via WATCHER_RPC_* which map to plain RPC_URL_* here.
+    environment:
+      NETWORK: ${NETWORK:-local}
+      DATABASE_URL: postgres://watcher_rw:${WATCHER_DB_PASSWORD}@postgres:5432/armada
+      DATABASE_SCHEMA: watcher
+      VIEWS_SCHEMA: indexed
+      DEPLOYMENTS_DIR: /deployments
+      RPC_URL_31337: ${RPC_URL_31337:-}
+      RPC_URL_31338: ${RPC_URL_31338:-}
+      RPC_URL_31339: ${RPC_URL_31339:-}
+      RPC_URL_11155111: ${RPC_URL_11155111:-}
+      RPC_URL_84532: ${RPC_URL_84532:-}
+      RPC_URL_421614: ${RPC_URL_421614:-}
+      RPC_URL_1: ${RPC_URL_1:-}
+      RPC_URL_8453: ${RPC_URL_8453:-}
+      RPC_URL_42161: ${RPC_URL_42161:-}
+    volumes:
+      - ../../deployments:/deployments:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:42069/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  actor:
+    build:
+      context: ../..
+      dockerfile: relayer-v2/actor/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Started, NOT healthy (§11.1): the actor must boot and serve /fees + /relay even if
+      # the watcher is down; discovery idles and the fallback scanner may engage.
+      watcher:
+        condition: service_started
+        required: false
+    ports:
+      - "3001:3001"
+    environment:
+      NETWORK: ${NETWORK:-local}
+      DATABASE_URL: postgres://actor_rw:${ACTOR_DB_PASSWORD}@postgres:5432/armada
+      INDEXED_SCHEMA: indexed
+      DEPLOYMENTS_DIR: /deployments
+      RAILGUN_DB_PATH: /state/railgun-db
+      ACTOR_PORT: "3001"
+      ETH_USD_PRICE_STATIC: ${ETH_USD_PRICE_STATIC:?}
+      ETH_USD_FEED_ADDRESS: ${ETH_USD_FEED_ADDRESS:-}
+      RELAYER_TRUST_PROXY: ${RELAYER_TRUST_PROXY:-false}
+      # Secret pass-throughs (actor only, D2): sourced from secrets.env via --env-file
+      # layering, or from local.env's public dev values in local mode.
+      RELAYER_PRIVATE_KEY: ${RELAYER_PRIVATE_KEY:-}
+      RELAYER_RAILGUN_MNEMONIC: ${RELAYER_RAILGUN_MNEMONIC:-}
+      BROADCASTER_RAILGUN_ADDRESS: ${BROADCASTER_RAILGUN_ADDRESS:-}
+      RPC_URL_31337: ${RPC_URL_31337:-}
+      RPC_URL_31338: ${RPC_URL_31338:-}
+      RPC_URL_31339: ${RPC_URL_31339:-}
+      RPC_URL_11155111: ${RPC_URL_11155111:-}
+      RPC_URL_84532: ${RPC_URL_84532:-}
+      RPC_URL_421614: ${RPC_URL_421614:-}
+      RPC_URL_1: ${RPC_URL_1:-}
+      RPC_URL_8453: ${RPC_URL_8453:-}
+      RPC_URL_42161: ${RPC_URL_42161:-}
+    # Secrets ONLY here (D2/S1): RELAYER_PRIVATE_KEY, RELAYER_RAILGUN_MNEMONIC,
+    # optional BROADCASTER_RAILGUN_ADDRESS. File is gitignored.
+    env_file:
+      - path: ./secrets.env
+        required: false
+    volumes:
+      - ../../deployments:/deployments:ro
+      - actor-railgun-db:/state
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+volumes:
+  pgdata:
+  actor-railgun-db:

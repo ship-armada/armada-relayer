@@ -1,0 +1,14 @@
+{
+  "name": "armada-relayer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Armada relayer v2 — watcher/actor architecture (specs/RELAYER_V2.md)",
+  "scripts": {
+    "relayer-v2": "docker compose -f relayer-v2/compose/docker-compose.yml --env-file relayer-v2/compose/local.env up --build",
+    "relayer-v2:sepolia": "docker compose -f relayer-v2/compose/docker-compose.yml --env-file relayer-v2/compose/sepolia.env --env-file relayer-v2/compose/secrets.env up --build -d",
+    "watcher:dev": "npm --prefix relayer-v2/watcher run dev",
+    "actor:dev": "npm --prefix relayer-v2/actor run dev",
+    "watcher:abis": "node relayer-v2/watcher/scripts/generate-abis.mjs",
+    "test": "npm --prefix relayer-v2/actor test && npm --prefix relayer-v2/watcher test"
+  }
+}
