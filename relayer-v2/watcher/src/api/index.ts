@@ -15,7 +15,12 @@ import {
   worstOf,
 } from "../lib/api-helpers";
 import { emptyQuickSync } from "./quick-sync";
-import { decodeNullifiers, decodeUnshields, type RawLogRow } from "../lib/quick-sync-decode";
+import {
+  decodeNullifiers,
+  decodeUnshields,
+  decodeTransactCommitments,
+  type RawLogRow,
+} from "../lib/quick-sync-decode";
 
 const deploymentsRoot =
   process.env.DEPLOYMENTS_DIR ?? join(process.cwd(), "..", "..", "deployments");
@@ -161,8 +166,11 @@ app.get("/v1/quick-sync/:chainId", async (c) => {
     topics: JSON.parse(r.topics) as string[],
   }));
 
+  // commitmentEvents: transact decoded here (phase 3); shield commitments (poseidon hash) added
+  // in phase 4. Ordered by (block, logIndex) via the query; shields will merge-sort in.
   const result = {
     ...emptyQuickSync(),
+    commitmentEvents: decodeTransactCommitments(rows),
     nullifierEvents: decodeNullifiers(rows),
     unshieldEvents: decodeUnshields(rows),
   };

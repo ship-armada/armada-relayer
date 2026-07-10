@@ -2,7 +2,13 @@
 // ABOUTME: (spec §7.3). Phase 2: nullifiers + unshields. Byte encodings match engine 9.5.1.
 import { decodeEventLog } from "viem";
 import { PrivacyPoolAbi } from "../../abis/PrivacyPool";
-import type { QuickSyncNullifier, QuickSyncUnshieldEvent } from "../api/quick-sync";
+import type {
+  QuickSyncNullifier,
+  QuickSyncUnshieldEvent,
+  QuickSyncCommitmentEvent,
+  QuickSyncTransactCommitment,
+} from "../api/quick-sync";
+import { TRANSACT_COMMITMENT_V2_TYPE } from "../api/quick-sync";
 
 /** A stored raw log row (from the `raw_event_log` table), ordered by (blockNumber, logIndex). */
 export interface RawLogRow {
@@ -47,6 +53,62 @@ export function decodeNullifiers(rows: RawLogRow[]): QuickSyncNullifier[] {
         blockNumber: Number(row.blockNumber),
       });
     }
+  }
+  return out;
+}
+
+/**
+ * Transact → one CommitmentEvent per log, each commitment a TransactCommitmentV2. Hashes are
+ * GIVEN in the event's `hash[]`. Ciphertext split matches the engine's formatCommitmentCiphertext:
+ * ivTag = ciphertext[0] (iv = first 16 bytes, tag = last 16), data = ciphertext[1..3]. Verified
+ * against engine 9.5.1 V2Events.formatTransactEvent.
+ */
+export function decodeTransactCommitments(rows: RawLogRow[]): QuickSyncCommitmentEvent[] {
+  const out: QuickSyncCommitmentEvent[] = [];
+  for (const row of rows) {
+    const ev = decode(row);
+    if (ev.eventName !== "Transact") continue;
+    const args = ev.args as {
+      treeNumber: number | bigint;
+      startPosition: number | bigint;
+      hash: readonly string[];
+      ciphertext: readonly {
+        ciphertext: readonly string[]; // bytes32[4]
+        blindedSenderViewingKey: string;
+        blindedReceiverViewingKey: string;
+        annotationData: string;
+        memo: string;
+      }[];
+    };
+    const utxoTree = Number(args.treeNumber);
+    const startPosition = Number(args.startPosition);
+    const txid = formatUint256(row.txHash);
+    const commitments: QuickSyncTransactCommitment[] = args.ciphertext.map((cc, i) => {
+      const ct = cc.ciphertext.map(formatUint256); // each 64-char UINT_256
+      const ivTag = ct[0]!;
+      return {
+        commitmentType: TRANSACT_COMMITMENT_V2_TYPE,
+        hash: formatUint256(args.hash[i]!),
+        txid,
+        timestamp: undefined,
+        blockNumber: Number(row.blockNumber),
+        utxoTree,
+        utxoIndex: startPosition + i,
+        railgunTxid: undefined,
+        ciphertext: {
+          ciphertext: {
+            iv: ivTag.substring(0, 32), // first 16 bytes
+            tag: ivTag.substring(32), // last 16 bytes
+            data: ct.slice(1), // remaining bytes32 elements
+          },
+          blindedSenderViewingKey: formatUint256(cc.blindedSenderViewingKey),
+          blindedReceiverViewingKey: formatUint256(cc.blindedReceiverViewingKey),
+          annotationData: cc.annotationData, // bytes — passed through as decoded
+          memo: cc.memo,
+        },
+      };
+    });
+    out.push({ txid, treeNumber: utxoTree, startPosition, commitments, blockNumber: Number(row.blockNumber) });
   }
   return out;
 }

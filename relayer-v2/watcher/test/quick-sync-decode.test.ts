@@ -6,6 +6,7 @@ import { PrivacyPoolAbi } from "../abis/PrivacyPool";
 import {
   decodeNullifiers,
   decodeUnshields,
+  decodeTransactCommitments,
   formatUint256,
   type RawLogRow,
 } from "../src/lib/quick-sync-decode";
@@ -91,5 +92,57 @@ describe("decodeUnshields", () => {
   it("ignores non-Unshield logs", () => {
     const rows = [row("Nullified", { treeNumber: 0, nullifier: ["0x" + "aa".repeat(32)] })];
     expect(decodeUnshields(rows)).toEqual([]);
+  });
+});
+
+describe("decodeTransactCommitments", () => {
+  const b32 = (n: string) => "0x" + n.repeat(32);
+  function cc(over: Partial<Record<string, unknown>> = {}) {
+    return {
+      ciphertext: [b32("a1"), b32("a2"), b32("a3"), b32("a4")], // bytes32[4]
+      blindedSenderViewingKey: b32("b1"),
+      blindedReceiverViewingKey: b32("b2"),
+      annotationData: "0xdead",
+      memo: "0xbeef",
+      ...over,
+    };
+  }
+
+  it("one CommitmentEvent per log; hash from event hash[]; ciphertext split matches the engine", () => {
+    const rows = [
+      row(
+        "Transact",
+        { treeNumber: 2, startPosition: 10, hash: [b32("11"), b32("22")], ciphertext: [cc(), cc()] },
+        { blockNumber: 200n },
+      ),
+    ];
+    const events = decodeTransactCommitments(rows);
+    expect(events).toHaveLength(1);
+    const ev = events[0]!;
+    expect(ev).toMatchObject({ txid: formatUint256(TX), treeNumber: 2, startPosition: 10, blockNumber: 200 });
+    expect(ev.commitments).toHaveLength(2);
+    const c0 = ev.commitments[0]!;
+    expect(c0.commitmentType).toBe("TransactCommitmentV2");
+    expect(c0.hash).toBe("11".repeat(32));
+    expect(c0).toMatchObject({ utxoTree: 2, utxoIndex: 10, railgunTxid: undefined, timestamp: undefined });
+    // ivTag = ciphertext[0] (a1×32 = 64 chars); iv=first 32 hex, tag=last 32, data=remaining 3
+    expect(c0.commitmentType === "TransactCommitmentV2" && c0.ciphertext.ciphertext).toEqual({
+      iv: "a1".repeat(16),
+      tag: "a1".repeat(16),
+      data: ["a2".repeat(32), "a3".repeat(32), "a4".repeat(32)],
+    });
+    if (c0.commitmentType === "TransactCommitmentV2") {
+      expect(c0.ciphertext.blindedSenderViewingKey).toBe("b1".repeat(32));
+      expect(c0.ciphertext.annotationData).toBe("0xdead");
+      expect(c0.ciphertext.memo).toBe("0xbeef");
+    }
+    // second commitment: hash[1], utxoIndex incremented
+    expect(ev.commitments[1]!.hash).toBe("22".repeat(32));
+    expect(ev.commitments[1]!.utxoIndex).toBe(11);
+  });
+
+  it("ignores non-Transact logs", () => {
+    const rows = [row("Nullified", { treeNumber: 0, nullifier: [b32("aa")] })];
+    expect(decodeTransactCommitments(rows)).toEqual([]);
   });
 });
