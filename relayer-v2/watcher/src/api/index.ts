@@ -14,6 +14,7 @@ import {
   classifyFreshness,
   worstOf,
 } from "../lib/api-helpers";
+import { emptyQuickSync } from "./quick-sync";
 
 const deploymentsRoot =
   process.env.DEPLOYMENTS_DIR ?? join(process.cwd(), "..", "..", "deployments");
@@ -114,6 +115,29 @@ app.get("/v1/nullifiers", async (c) => {
     nextCursor: nextCursorOf(rows, params.limit),
     indexedThrough: through === null ? null : Number(through),
   });
+});
+
+// Quick-sync (§7.3, fast-follow): serves the Railgun engine's AccumulatedEvents for the hub,
+// decoded server-side from stored raw logs so a frontend engine hydrates its merkletree from one
+// call instead of scanning from block 0. Railgun events live only on the hub. P1/P4 compliant.
+// NOTE: Phase 1 skeleton — returns empty; decode lands in phases 2–4 (see .context/PLAN_QUICK_SYNC.md).
+app.get("/v1/quick-sync/:chainId", async (c) => {
+  const chainId = Number(c.req.param("chainId"));
+  if (!Number.isInteger(chainId) || chainId !== hub.chainId) {
+    return c.json(
+      { error: `quick-sync is only served for the hub chain ${hub.chainId} (Railgun events)` },
+      400,
+    );
+  }
+  const startingBlockRaw = c.req.query("startingBlock");
+  const startingBlock = Number(startingBlockRaw);
+  if (startingBlockRaw === undefined || !Number.isInteger(startingBlock) || startingBlock < 0) {
+    return c.json({ error: "startingBlock is required and must be a non-negative integer" }, 400);
+  }
+  const through = await indexedThrough(hub.chainId);
+  const result = emptyQuickSync();
+  c.header("cache-control", cacheControlFor(null, through, hub.confirmations));
+  return c.json({ ...result, indexedThrough: through === null ? null : Number(through) });
 });
 
 app.get("/v1/logs", async (c) => {
