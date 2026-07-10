@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Armada relayer v2 watcher: Ponder-based chain indexer + public read API (spec §7)",
+  "description": "Armada relayer v2 watcher: Ponder-based chain indexer + public read API (spec \u00a77)",
   "scripts": {
     "dev": "ponder dev",
     "start": "ponder start --schema ${DATABASE_SCHEMA:-watcher} --views-schema ${VIEWS_SCHEMA:-indexed}",
@@ -14,11 +14,13 @@
   "dependencies": {
     "hono": "^4.6.0",
     "ponder": "0.16.8",
-    "viem": "^2.30.0"
+    "viem": "^2.30.0",
+    "@railgun-community/poseidon-hash-wasm": "1.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "@railgun-community/engine": "9.5.1"
   }
 }

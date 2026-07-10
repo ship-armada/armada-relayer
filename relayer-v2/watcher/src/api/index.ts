@@ -14,6 +14,27 @@ import {
   classifyFreshness,
   worstOf,
 } from "../lib/api-helpers";
+import { emptyQuickSync } from "./quick-sync";
+import {
+  decodeNullifiers,
+  decodeUnshields,
+  decodeCommitmentEvents,
+  type RawLogRow,
+} from "../lib/quick-sync-decode";
+import { initPoseidonWasm } from "../lib/poseidon";
+
+// Max block window served per quick-sync page (whole blocks; caller paginates by servedThroughBlock).
+// Validated at startup: a non-positive/NaN value would make windowEnd < startingBlock, breaking
+// the documented resume rule (servedThroughBlock + 1) into an infinite loop — fail loud instead.
+const QUICK_SYNC_MAX_BLOCK_WINDOW = ((): number => {
+  const raw = process.env.QUICK_SYNC_MAX_BLOCK_WINDOW;
+  if (raw === undefined) return 100_000;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`QUICK_SYNC_MAX_BLOCK_WINDOW must be a positive integer, got ${JSON.stringify(raw)}`);
+  }
+  return n;
+})();
 
 const deploymentsRoot =
   process.env.DEPLOYMENTS_DIR ?? join(process.cwd(), "..", "..", "deployments");
@@ -113,6 +134,78 @@ app.get("/v1/nullifiers", async (c) => {
     items,
     nextCursor: nextCursorOf(rows, params.limit),
     indexedThrough: through === null ? null : Number(through),
+  });
+});
+
+// Quick-sync (§7.3): serves the Railgun engine's AccumulatedEvents for the hub, decoded
+// server-side from stored raw logs so a frontend engine hydrates its merkletree from one call
+// instead of scanning from block 0. Railgun events live only on the hub. P1/P4 compliant.
+// See .context/PLAN_QUICK_SYNC.md.
+const HUB_POOL_ADDRESS = hub.manifest.contracts.privacyPool!.toLowerCase();
+
+app.get("/v1/quick-sync/:chainId", async (c) => {
+  const chainId = Number(c.req.param("chainId"));
+  if (!Number.isInteger(chainId) || chainId !== hub.chainId) {
+    return c.json(
+      { error: `quick-sync is only served for the hub chain ${hub.chainId} (Railgun events)` },
+      400,
+    );
+  }
+  const startingBlockRaw = c.req.query("startingBlock");
+  const startingBlock = Number(startingBlockRaw);
+  if (startingBlockRaw === undefined || !Number.isInteger(startingBlock) || startingBlock < 0) {
+    return c.json({ error: "startingBlock is required and must be a non-negative integer" }, 400);
+  }
+  await initPoseidonWasm(); // idempotent; needed for shield commitment hashes
+  const through = await indexedThrough(hub.chainId);
+  if (through === null || BigInt(startingBlock) > through) {
+    // Nothing indexed yet, or the caller is already past head — empty page at the cursor.
+    c.header("cache-control", "public, max-age=5");
+    return c.json({ ...emptyQuickSync(), servedThroughBlock: startingBlock, indexedThrough: through === null ? null : Number(through) });
+  }
+
+  // Bound the response to a block window (whole blocks only — never splits an event) so a
+  // cold sync from block 0 can't return an unbounded payload. The caller continues with
+  // startingBlock = servedThroughBlock + 1 until servedThroughBlock === indexedThrough.
+  const windowEnd = BigInt(Math.min(Number(through), startingBlock + QUICK_SYNC_MAX_BLOCK_WINDOW - 1));
+
+  // All Railgun events (Shield/Transact/Nullified/Unshield) are emitted by the hub pool, so
+  // filtering by that address yields only decodable PrivacyPool logs (P1: contract filter only).
+  const dbRows = await db
+    .select()
+    .from(schema.rawEventLog)
+    .where(
+      and(
+        eq(schema.rawEventLog.chainId, hub.chainId),
+        eq(schema.rawEventLog.address, HUB_POOL_ADDRESS),
+        gte(schema.rawEventLog.blockNumber, BigInt(startingBlock)),
+        lte(schema.rawEventLog.blockNumber, windowEnd),
+      ),
+    )
+    .orderBy(asc(schema.rawEventLog.blockNumber), asc(schema.rawEventLog.logIndex));
+  const rows: RawLogRow[] = dbRows.map((r) => ({
+    blockNumber: r.blockNumber,
+    txHash: r.txHash,
+    logIndex: r.logIndex,
+    data: r.data,
+    topics: JSON.parse(r.topics) as string[],
+  }));
+
+  // commitmentEvents: Shield + Transact in one block/log-ordered pass (poseidon shield hashes).
+  const result = {
+    commitmentEvents: decodeCommitmentEvents(rows),
+    nullifierEvents: decodeNullifiers(rows),
+    unshieldEvents: decodeUnshields(rows),
+  };
+  c.header("cache-control", cacheControlFor(windowEnd, through, hub.confirmations));
+  // JSON.stringify drops the `undefined`-valued keys (fee/timestamp/railgunTxid/from/poisPerList)
+  // from the wire format. That is runtime-equivalent for the consuming engine (an absent key reads
+  // as undefined), so do NOT "fix" this to wire-emit the keys — the required-key-with-undefined
+  // types (quick-sync.ts) exist for the compile-time engine pin, not the serialized shape.
+  return c.json({
+    ...result,
+    servedThroughBlock: Number(windowEnd), // caller resumes at windowEnd + 1 while < indexedThrough
+    indexedThrough: Number(through),
   });
 });
 

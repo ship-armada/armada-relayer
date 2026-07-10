@@ -272,7 +272,7 @@ All endpoints are P1-compliant global streams or public-data lookups. JSON, CORS
 | `GET /v1/commitments` | `fromBlock` (req), `toBlock`, `limit` | `{ items: RawCommitment[], nextCursor, indexedThrough }` — `RawCommitment = { blockNumber, txHash, logIndex, data, topics }` (matches `apps/armada-interface/src/lib/events/EventSource.ts`) |
 | `GET /v1/nullifiers` | same | `{ items: RawNullifier[], ... }` — `{ blockNumber, txHash, logIndex, hash }` |
 | `GET /v1/logs` | `chainId` (req), `address` (req), `fromBlock` (req), `toBlock`, `limit` | `{ items: RawTxLog[], ... }`. `address` MUST be validated against the allowlist of indexed protocol contracts for that chain; any other address → 400. (This is a contract-address filter, never a user filter — P1.) |
-| `GET /v1/quick-sync/:chainId` | `startingBlock` (req) | **Fast-follow — NOT in initial v2 delivery** (ruling, §17.2): implemented only once the frontend engine-port gate (plan Phase 4) is decided. Contract when built: `AccumulatedEvents` — `{ commitmentEvents, unshieldEvents, nullifierEvents }` in the exact TypeScript shapes of the pinned `@railgun-community/engine` version, decoded server-side from stored raw logs (§5.1 `rawData` preserves this option). A compile-time type test MUST pin these shapes against the engine package so an SDK bump fails the build. Note: this requires engine *types* only (dev dependency) — S6's runtime-SDK exclusion for the watcher still holds. |
+| `GET /v1/quick-sync/:chainId` | `startingBlock` (req) | **Built ahead of the frontend engine-port gate (§19.9); no consumer until F5.** Returns `AccumulatedEvents` — `{ commitmentEvents, unshieldEvents, nullifierEvents }` in the exact shapes of the pinned `@railgun-community/engine` 9.5.1, decoded server-side from stored raw logs (§5.1 `rawData`), plus `servedThroughBlock` (block-window pagination cursor) and `indexedThrough`. Hub chain only (Railgun events). A compile-time type test pins the shapes against the engine package so an SDK bump fails the build (B3), and a ground-truth test deep-equals the engine's own note formatters. The engine is a watcher **devDependency** (types + test); the one runtime addition is `@railgun-community/poseidon-hash-wasm` for shield commitment hashes — a pure primitive, narrow S6 exception (§19.9). |
 | `GET /health` | — | `{ status, chains: [{ chainId, lastIndexedBlock, head, lagBlocks, lastEventAt }], generatedAt }`; 200/503 semantics mirror §6.6 |
 | `GET /metrics` | — | Prometheus text format (Ponder built-in + any custom API metrics) |
 
@@ -472,6 +472,15 @@ Structured JSON logs (pino or console-JSON; implementer's choice). MUST NOT log:
 
 ## 14. Migration & Cutover
 
+> **Testnet simplification (2026-07-10 ruling; see §19.8).** The staged M1–M4 migration below
+> is normative ONLY for a future **mainnet** cutover. For the current **testnet** deployment
+> there are no users and no value at risk, so cutover is a single step: deploy the full v2 stack
+> (postgres + watcher + actor), switch off v1, point the frontend at the watcher. No
+> watcher-first soak, no clean-operation window, and **no cutover import script** — relays
+> lost/duplicated/state dropped in the switchover are acceptable (the destination contract's
+> replay protection covers duplicates; §16.1/D4). The M3 import step is explicitly WON'T-DO on
+> testnet.
+
 Transition states are allowed to violate D1 (both v1 scanner and watcher polling) for a bounded period.
 
 1. **M1 — Watcher ships first.** Deploy postgres + watcher alongside v1. Watcher backfills from manifest `deployBlock`s. v1 continues relaying untouched. Verify: differential test (§15.3) green against Sepolia; watcher `/health` healthy for 48 h.
@@ -621,6 +630,30 @@ where this document's original text disagreed with preserved v1 behavior:
    fee-quote variance buffer applies to current AND previous schedules; `profitMarginBps`
    defaults to 0 (§6.1); `relayWithHook` falls back to `receiveMessage` when no HookRouter
    is configured (§8.4).
+
+Later amendments:
+
+8. **Testnet cutover simplification (§14).** The staged M1–M4 migration is normative only for a
+   future mainnet cutover. Testnet cutover is a single step — deploy the full v2 stack, switch
+   off v1, repoint the frontend — with no soak window and **no cutover import script**; lost or
+   duplicated relays in the switchover are acceptable (replay protection covers duplicates). The
+   deployment-manifest source also moved to the central registry (ship-armada/armada-deployments,
+   a pinned submodule) selected by `DEPLOYMENT_INSTANCE`; the flat in-repo manifests are retired
+   (local/e2e keeps a flat fallback). Config posture (§7.2) and the mainnet loud-fail are
+   unchanged.
+
+9. **Quick-sync endpoint built ahead of the frontend gate (§7.3).** `GET /v1/quick-sync/:chainId`
+   is implemented now (it was fast-follow, §17.2.2): serves engine `AccumulatedEvents` decoded
+   from stored raw hub logs, block-window paginated (`servedThroughBlock`/`indexedThrough`).
+   Correctness is gated by (a) a compile-time pin against `@railgun-community/engine` 9.5.1
+   (devDependency; B3) and (b) a ground-truth test deep-equalling the engine's own note
+   formatters (shield commitment hashes use `value` as-is — the contract pre-deducts the fee).
+   **S6 exception:** the watcher gains ONE runtime Railgun dependency,
+   `@railgun-community/poseidon-hash-wasm` (pinned 1.0.1, the engine's exact version), for shield
+   hashes — a pure crypto primitive (no keys/engine/network), WASM-init fail-loud, re-pinned with
+   any engine bump. The engine itself stays devDependency-only; S6's runtime-SDK exclusion
+   otherwise holds. Frontend adoption (F5) remains gated on the engine-port decision — the
+   endpoint has no consumer until then.
 
 Also recorded in §1: the standalone-repository ruling. Implementation cross-reference:
 `.context/deviations.md` (reconciliation log with monorepo file:line evidence).

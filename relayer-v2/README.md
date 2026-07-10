@@ -111,9 +111,11 @@ AND `.githooks/pre-commit` `ALLOWED_ENV_FILES`; enable hooks with
   `/health`, `/metrics` (bind internally; not through the public proxy).
   v1's `GET /cctp-status/:messageHash` intentionally does not exist (P2, §16.1).
 - **Watcher (`indexerUrl`, :42069)** — §7.3: `/v1/commitments`, `/v1/nullifiers`, `/v1/logs`,
-  `/v1/health` (rich §6.6 payload — Ponder's built-in `/health` bare-200 shadows the root
-  path; see DEV-8), `/ready`, `/status`, `/metrics` (Ponder built-ins).
-  `GET /v1/quick-sync/:chainId` is a fast-follow, NOT in initial delivery (ruling §17.2.2).
+  `/v1/quick-sync/:chainId?startingBlock=N` (hub only; engine `AccumulatedEvents` decoded from
+  raw logs, block-window paginated via `servedThroughBlock`/`indexedThrough` — cap
+  `QUICK_SYNC_MAX_BLOCK_WINDOW`, default 100k), `/v1/health` (rich §6.6 payload — Ponder's
+  built-in `/health` bare-200 shadows the root path; see DEV-8), `/ready`, `/status`,
+  `/metrics` (Ponder built-ins). Quick-sync has no consumer until the frontend F5 gate (§18).
 
 ## Migration runbook (§14)
 
