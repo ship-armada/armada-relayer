@@ -2,8 +2,36 @@
 // ABOUTME: v1's env-var names (HUB_RPC/CLIENT_A_RPC/CLIENT_B_RPC, CCTP_MODE, RELAYER_*), boot-fail rules.
 import type { NetworkTopology } from "./networks.js";
 import { assertDomainPairing, getTopology, allChains } from "./networks.js";
-import type { ChainDeployment, YieldManifest } from "./manifests.js";
+import { join } from "node:path";
+import type { ChainDeployment, YieldManifest, DeploymentSource } from "./manifests.js";
 import { loadAllManifests, loadYieldManifest } from "./manifests.js";
+
+/** Registry environment dir per network (armada-deployments layout); local has no instance. */
+const REGISTRY_ENVIRONMENT: Record<string, string> = { sepolia: "testnet", mainnet: "mainnet" };
+
+/**
+ * Chooses the manifest source: the central registry when DEPLOYMENT_INSTANCE is set, else flat
+ * files (local e2e / monorepo). Registry root defaults to the `deployments/registry` submodule.
+ */
+export function resolveDeploymentSource(
+  env: NodeJS.ProcessEnv,
+  network: string,
+  deploymentsRoot: string,
+): DeploymentSource {
+  const instance = env.DEPLOYMENT_INSTANCE;
+  if (!instance) {
+    return { kind: "flat", root: deploymentsRoot };
+  }
+  const environment = env.DEPLOYMENT_ENVIRONMENT ?? REGISTRY_ENVIRONMENT[network];
+  if (!environment) {
+    throw new Error(
+      `DEPLOYMENT_INSTANCE is set but no registry environment maps to NETWORK=${network} ` +
+        `(expected sepolia|mainnet, or set DEPLOYMENT_ENVIRONMENT explicitly).`,
+    );
+  }
+  const root = env.DEPLOYMENT_REGISTRY_DIR ?? join(deploymentsRoot, "registry");
+  return { kind: "registry", root, environment, instance };
+}
 
 export type CctpMode = "mock" | "real";
 
@@ -113,8 +141,9 @@ export function buildConfig(env: NodeJS.ProcessEnv, deploymentsRoot: string): Ac
 
   // Manifests load last so cheap env misconfiguration surfaces before missing-manifest
   // errors; both fail the boot loudly either way (§7.2).
-  const deployments = loadAllManifests(deploymentsRoot, topology);
-  const yieldManifest = loadYieldManifest(deploymentsRoot, topology.network);
+  const source = resolveDeploymentSource(env, topology.network, deploymentsRoot);
+  const deployments = loadAllManifests(source, topology);
+  const yieldManifest = loadYieldManifest(source, topology);
 
   return {
     network: topology.network,

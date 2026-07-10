@@ -43,6 +43,9 @@ services:
       DATABASE_SCHEMA: watcher
       VIEWS_SCHEMA: indexed
       DEPLOYMENTS_DIR: /deployments
+      # Registry instance (unset ⇒ flat local manifests). Root defaults to /deployments/registry.
+      DEPLOYMENT_INSTANCE: ${DEPLOYMENT_INSTANCE:-}
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-}
       HUB_RPC: ${HUB_RPC:-}
       CLIENT_A_RPC: ${CLIENT_A_RPC:-}
       CLIENT_B_RPC: ${CLIENT_B_RPC:-}
@@ -77,6 +80,8 @@ services:
       DATABASE_URL: postgres://actor_rw:${ACTOR_DB_PASSWORD}@postgres:5432/armada
       INDEXED_SCHEMA: indexed
       DEPLOYMENTS_DIR: /deployments
+      DEPLOYMENT_INSTANCE: ${DEPLOYMENT_INSTANCE:-}
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-}
       RAILGUN_DB_PATH: /state/railgun-db
       ACTOR_PORT: "3001"
       ETH_USD_PRICE_STATIC: ${ETH_USD_PRICE_STATIC:?}

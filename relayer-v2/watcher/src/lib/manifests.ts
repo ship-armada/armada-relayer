@@ -58,10 +58,67 @@ export function networkName(env: NodeJS.ProcessEnv): NetworkName {
   return network;
 }
 
-/** v1 file-name convention: privacy-pool-{hub|client|clientB}{-env}.json. */
+/** Manifest source: central registry (armada-deployments) or flat local files (monorepo e2e). */
+export type DeploymentSource =
+  | { kind: "flat"; root: string }
+  | { kind: "registry"; root: string; environment: string; instance: string };
+
+const REGISTRY_ENVIRONMENT: Record<string, string> = { sepolia: "testnet", mainnet: "mainnet" };
+
+/** Chooses registry when DEPLOYMENT_INSTANCE is set, else flat files (local/monorepo). */
+export function resolveSource(env: NodeJS.ProcessEnv, deploymentsRoot: string): DeploymentSource {
+  const instance = env.DEPLOYMENT_INSTANCE;
+  if (!instance) return { kind: "flat", root: deploymentsRoot };
+  const network = networkName(env);
+  const environment = env.DEPLOYMENT_ENVIRONMENT ?? REGISTRY_ENVIRONMENT[network];
+  if (!environment) {
+    throw new Error(
+      `DEPLOYMENT_INSTANCE is set but no registry environment maps to NETWORK=${network} ` +
+        `(expected sepolia|mainnet, or set DEPLOYMENT_ENVIRONMENT explicitly).`,
+    );
+  }
+  const root = env.DEPLOYMENT_REGISTRY_DIR ?? join(deploymentsRoot, "registry");
+  return { kind: "registry", root, environment, instance };
+}
+
+/** Flat file-name convention: privacy-pool-{hub|client|clientB}{-env}.json. */
 export function manifestFile(network: NetworkName, chain: WatcherChain): string {
   const suffix = network === "local" ? "" : `-${network}`;
   return `privacy-pool-${chain.manifestPrefix}${suffix}.json`;
+}
+
+interface InstanceManifest {
+  name: string;
+  chains: Record<string, { chainId: number; role: "hub" | "client" }>;
+}
+
+/** Locates the registry privacy-pool.json path for a chain (matched by chainId). */
+function registryManifestPath(
+  source: { root: string; environment: string; instance: string },
+  chain: WatcherChain,
+): string {
+  const dir = join(source.root, source.environment, source.instance);
+  const indexPath = join(dir, "manifest.json");
+  if (!existsSync(indexPath)) {
+    throw new Error(
+      `Missing deployment registry instance: expected ${indexPath}. Set DEPLOYMENT_INSTANCE to ` +
+        `a published instance and run \`git submodule update --init deployments/registry\`.`,
+    );
+  }
+  const instance = JSON.parse(readFileSync(indexPath, "utf8")) as InstanceManifest;
+  const entry = Object.entries(instance.chains).find(([, c]) => c.chainId === chain.chainId);
+  if (!entry) {
+    throw new Error(
+      `Registry instance "${instance.name}" has no chainId ${chain.chainId} (topology ${chain.name}).`,
+    );
+  }
+  const [slug, meta] = entry;
+  if (meta.role !== chain.role) {
+    throw new Error(
+      `Registry chain ${slug} role "${meta.role}" != topology "${chain.role}" (chainId ${chain.chainId}).`,
+    );
+  }
+  return join(dir, slug, "privacy-pool.json");
 }
 
 /** Hub CCTP domain for the network (used for xchain_initiated shield rows, which carry
@@ -72,12 +129,16 @@ export function hubDomain(network: NetworkName): number {
 
 export function resolveChains(env: NodeJS.ProcessEnv, deploymentsRoot: string): ResolvedChain[] {
   const network = networkName(env);
+  const source = resolveSource(env, deploymentsRoot);
   return CHAINS[network].map((chain) => {
     const rpcUrl = env[chain.rpcUrlEnv] ?? chain.defaultRpcUrl;
     if (!rpcUrl) {
       throw new Error(`Missing RPC URL for chain ${chain.chainId}: set ${chain.rpcUrlEnv}`);
     }
-    const path = join(deploymentsRoot, manifestFile(network, chain));
+    const path =
+      source.kind === "flat"
+        ? join(source.root, manifestFile(network, chain))
+        : registryManifestPath(source, chain);
     if (!existsSync(path)) {
       throw new Error(
         `Missing deployment manifest for NETWORK=${network} chainId=${chain.chainId}: ` +

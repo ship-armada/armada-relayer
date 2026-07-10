@@ -53,11 +53,17 @@ npm run actor:dev           # tsx watch (needs DATABASE_URL + RELAYER_RAILGUN_MN
 ### Sepolia / mainnet
 
 ```bash
+git submodule update --init deployments/registry   # central deployment registry (§7.2)
 cp relayer-v2/compose/secrets.env.example relayer-v2/compose/secrets.env  # fill in
-npm run relayer-v2:sepolia
+npm run relayer-v2:sepolia   # sepolia.env sets DEPLOYMENT_INSTANCE=demo1
 # mainnet is a CONFIGURATION POSTURE (§7.2): config builds/validates, but boot fails loudly
-# until privacy-pool-*-mainnet.json manifests exist in deployments/.
+# until a mainnet instance is published in the registry and named via DEPLOYMENT_INSTANCE.
 ```
+
+Testnet/mainnet manifests come from the **central registry**
+([ship-armada/armada-deployments](https://github.com/ship-armada/armada-deployments), a pinned
+submodule at `deployments/registry`) — pick the instance with `DEPLOYMENT_INSTANCE`. Local/e2e
+uses flat files from the monorepo instead (no registry). See `deployments/README.md`.
 
 ## Env reference
 
@@ -68,7 +74,10 @@ npm run relayer-v2:sepolia
 | `DATABASE_URL` | both | — | per-role URLs in compose (`watcher_rw` / `actor_rw`, §5) |
 | `HUB_RPC` / `CLIENT_A_RPC` / `CLIENT_B_RPC` | both | local defaults only | v1 names; paid-key URLs are secrets (§11.1) |
 | `IRIS_API_URL` | actor | per network (§7.2) | override the Iris base URL |
-| `DEPLOYMENTS_DIR` | both | `../../deployments` | manifest root (§7.2) |
+| `DEPLOYMENTS_DIR` | both | `../../deployments` | manifest root; registry defaults to `<dir>/registry` (§7.2) |
+| `DEPLOYMENT_INSTANCE` | both | — (flat files) | registry instance, e.g. `demo1`; unset ⇒ flat local manifests |
+| `DEPLOYMENT_ENVIRONMENT` | both | per network | registry env dir (`testnet`/`mainnet`); derived from `NETWORK` |
+| `DEPLOYMENT_REGISTRY_DIR` | both | `<DEPLOYMENTS_DIR>/registry` | override the registry root explicitly |
 | `RELAYER_PRIVATE_KEY` | actor | — | falls back to deployer key with a loud warning (§6.5) |
 | `RELAYER_RAILGUN_MNEMONIC` | actor | — | 12/24 words; boot-fails if absent (§6.5) |
 | `BROADCASTER_RAILGUN_ADDRESS` | actor | — | optional 0zk assertion (§6.5) |

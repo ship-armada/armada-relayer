@@ -6,18 +6,26 @@ import { fileURLToPath } from "node:url";
 import { getTopology, assertDomainPairing, allChains } from "../src/config/networks.js";
 import {
   loadAllManifests,
-  loadManifest,
   loadYieldManifest,
-  poolManifestFile,
+  networkSuffix,
   gaslessWrapperAddress,
+  type DeploymentSource,
 } from "../src/config/manifests.js";
-import { buildConfig } from "../src/config/env.js";
+import { buildConfig, resolveDeploymentSource } from "../src/config/env.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-// Fixture manifests in the real monorepo schema (local manifests are generated artifacts).
+// Flat fixture manifests in the real schema (local mode / monorepo e2e path).
 const FIXTURES = join(HERE, "fixtures", "deployments");
-// The committed REAL sepolia manifests (copied verbatim from the monorepo).
-const REAL_DEPLOYMENTS = join(HERE, "..", "..", "..", "deployments");
+// The central registry submodule — the real published manifests (testnet/demo1).
+const REGISTRY_ROOT = join(HERE, "..", "..", "..", "deployments", "registry");
+
+const flat = (root: string): DeploymentSource => ({ kind: "flat", root });
+const demo1 = (): DeploymentSource => ({
+  kind: "registry",
+  root: REGISTRY_ROOT,
+  environment: "testnet",
+  instance: "demo1",
+});
 
 const BASE_ENV = {
   NETWORK: "local",
@@ -77,27 +85,66 @@ describe("network topology (§7.2 table)", () => {
   });
 });
 
-describe("manifest loading (real monorepo schema)", () => {
-  it("uses v1 file naming: privacy-pool-{hub|client|clientB}{-env}.json", () => {
-    const t = getTopology("sepolia");
-    expect(poolManifestFile("sepolia", t.hub)).toBe("privacy-pool-hub-sepolia.json");
-    expect(poolManifestFile("sepolia", t.clients[0]!)).toBe("privacy-pool-client-sepolia.json");
-    expect(poolManifestFile("sepolia", t.clients[1]!)).toBe("privacy-pool-clientB-sepolia.json");
-    expect(poolManifestFile("local", t.hub)).toBe("privacy-pool-hub.json");
+describe("manifest source selection (resolveDeploymentSource)", () => {
+  it("no DEPLOYMENT_INSTANCE ⇒ flat provider at DEPLOYMENTS_DIR", () => {
+    expect(resolveDeploymentSource({}, "local", "/d")).toEqual({ kind: "flat", root: "/d" });
   });
 
+  it("DEPLOYMENT_INSTANCE ⇒ registry; environment derives from network (sepolia→testnet)", () => {
+    expect(resolveDeploymentSource({ DEPLOYMENT_INSTANCE: "demo1" }, "sepolia", "/d")).toEqual({
+      kind: "registry",
+      root: "/d/registry",
+      environment: "testnet",
+      instance: "demo1",
+    });
+    const mainnetSrc = resolveDeploymentSource({ DEPLOYMENT_INSTANCE: "m1" }, "mainnet", "/d");
+    expect(mainnetSrc).toMatchObject({ kind: "registry", environment: "mainnet" });
+  });
+
+  it("DEPLOYMENT_REGISTRY_DIR overrides the registry root", () => {
+    const s = resolveDeploymentSource(
+      { DEPLOYMENT_INSTANCE: "demo1", DEPLOYMENT_REGISTRY_DIR: "/reg" },
+      "sepolia",
+      "/d",
+    );
+    expect(s).toMatchObject({ kind: "registry", root: "/reg" });
+  });
+});
+
+describe("flat provider (local / monorepo e2e)", () => {
   it("loads the fixture local manifests (hub pool + client pools + cctp block)", () => {
-    const all = loadAllManifests(FIXTURES, getTopology("local"));
+    const all = loadAllManifests(flat(FIXTURES), getTopology("local"));
     expect(all).toHaveLength(3);
     expect(all[0]!.manifest.contracts.privacyPool).toMatch(/^0x/);
     expect(all[1]!.manifest.contracts.privacyPoolClient).toMatch(/^0x/);
     expect(all[0]!.manifest.cctp.messageTransmitter).toMatch(/^0x/);
     expect(gaslessWrapperAddress(all[0]!)).toMatch(/^0x/);
-    expect(loadYieldManifest(FIXTURES, "local")!.contracts.armadaYieldAdapter).toMatch(/^0x/);
+    expect(loadYieldManifest(flat(FIXTURES), getTopology("local"))!.contracts.armadaYieldAdapter)
+      .toMatch(/^0x/);
   });
 
-  it("loads the committed REAL sepolia manifests verbatim", () => {
-    const all = loadAllManifests(REAL_DEPLOYMENTS, getTopology("sepolia"));
+  it("suffix convention: '' local, '-sepolia', '-mainnet'", () => {
+    expect(networkSuffix("local")).toBe("");
+    expect(networkSuffix("sepolia")).toBe("-sepolia");
+    expect(networkSuffix("mainnet")).toBe("-mainnet");
+  });
+
+  it("missing flat manifest fails loudly", () => {
+    expect(() => loadAllManifests(flat("/no/such/dir"), getTopology("local"))).toThrow(
+      /Missing deployment manifest/,
+    );
+  });
+
+  it("rejects manifests whose chainId disagrees with the topology", () => {
+    const t = getTopology("local");
+    const skewed = { ...t, hub: { ...t.hub, chainId: 99999 }, clients: [] };
+    expect(() => loadAllManifests(flat(FIXTURES), skewed)).toThrow(/chainId/);
+  });
+});
+
+describe("registry provider (central armada-deployments submodule)", () => {
+  it("resolves demo1's sepolia hub + clients by chainId, with real addresses + deployBlock", () => {
+    const all = loadAllManifests(demo1(), getTopology("sepolia"));
     expect(all[0]!.manifest.contracts.privacyPool).toBe(
       "0x014aC1dfC2Bde83d4be2CFFb5bea4dE942DAD77F",
     );
@@ -109,23 +156,26 @@ describe("manifest loading (real monorepo schema)", () => {
       domain: 0,
       privacyPool: "0x014aC1dfC2Bde83d4be2CFFb5bea4dE942DAD77F",
     });
-    const yieldManifest = loadYieldManifest(REAL_DEPLOYMENTS, "sepolia");
-    expect(yieldManifest!.contracts.armadaYieldAdapter).toBe(
+    expect(loadYieldManifest(demo1(), getTopology("sepolia"))!.contracts.armadaYieldAdapter).toBe(
       "0x148A6A4588062dB433Fa8847017DB42bAc506458",
     );
   });
 
-  it("missing manifest fails loudly and specifically (mainnet posture)", () => {
-    const t = getTopology("mainnet");
-    expect(() => loadManifest(REAL_DEPLOYMENTS, "mainnet", t.hub)).toThrow(
-      /Missing deployment manifest for NETWORK=mainnet chainId=1.*privacy-pool-hub-mainnet\.json/s,
+  it("missing instance fails loudly and specifically (mainnet posture)", () => {
+    const src: DeploymentSource = {
+      kind: "registry",
+      root: REGISTRY_ROOT,
+      environment: "mainnet",
+      instance: "does-not-exist",
+    };
+    expect(() => loadAllManifests(src, getTopology("mainnet"))).toThrow(
+      /Missing deployment registry instance.*mainnet\/does-not-exist\/manifest\.json/s,
     );
   });
 
-  it("rejects manifests whose chainId/domain disagree with the topology", () => {
-    const t = getTopology("local");
-    const wrongChain = { ...t.hub, chainId: 31338 };
-    expect(() => loadManifest(FIXTURES, "local", wrongChain)).toThrow(/chainId/);
+  it("fails loudly when the instance lacks a topology chainId (demo1 has no mainnet chains)", () => {
+    // demo1 is a testnet instance; loading it against the mainnet topology (chainId 1) must fail.
+    expect(() => loadAllManifests(demo1(), getTopology("mainnet"))).toThrow(/chainId 1/);
   });
 });
 
@@ -199,7 +249,7 @@ describe("buildConfig", () => {
           CLIENT_A_RPC: "https://rpc",
           CLIENT_B_RPC: "https://rpc",
         } as NodeJS.ProcessEnv,
-        REAL_DEPLOYMENTS,
+        FIXTURES,
       ),
     ).toThrow(/ETH_USD_FEED_ADDRESS/);
   });
@@ -228,7 +278,7 @@ describe("buildConfig", () => {
           ETH_USD_PRICE_STATIC: "3000",
           ETH_USD_FEED_ADDRESS: "0x" + "11".repeat(20),
         } as NodeJS.ProcessEnv,
-        REAL_DEPLOYMENTS,
+        FIXTURES,
       ),
     ).toThrow(/HUB_RPC/);
   });
