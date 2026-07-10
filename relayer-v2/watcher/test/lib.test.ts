@@ -4,7 +4,12 @@ import { describe, it, expect } from "vitest";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decodeCctpHeader, logRowId, dedupKey, messageHashOf } from "../src/lib/decode";
-import { resolveChains, protocolAddressAllowlist, networkName } from "../src/lib/manifests";
+import {
+  resolveChains,
+  protocolAddressAllowlist,
+  networkName,
+  resolveSource,
+} from "../src/lib/manifests";
 import {
   parseRangeParams,
   nextCursorOf,
@@ -45,6 +50,34 @@ describe("decodeCctpHeader", () => {
     expect(logRowId(31337, "0xabc", 3)).toBe("31337:0xabc:3");
     expect(dedupKey("0xabc", 3)).toBe("0xabc:3"); // §3 dedupKey
     expect(messageHashOf("0x1234")).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+});
+
+describe("resolveSource (manifest source selection)", () => {
+  it("no DEPLOYMENT_INSTANCE ⇒ flat provider", () => {
+    expect(resolveSource({ NETWORK: "local" } as NodeJS.ProcessEnv, "/d")).toEqual({
+      kind: "flat",
+      root: "/d",
+    });
+  });
+
+  it("treats compose-passed EMPTY STRINGS as unset (${VAR:-} → '')", () => {
+    // Regression for the watcher's sepolia boot crash "no registry environment maps to
+    // NETWORK=sepolia" — compose passes unset vars as "", which `??` would not catch.
+    const s = resolveSource(
+      {
+        NETWORK: "sepolia",
+        DEPLOYMENT_INSTANCE: "demo1",
+        DEPLOYMENT_ENVIRONMENT: "",
+        DEPLOYMENT_REGISTRY_DIR: "",
+      } as NodeJS.ProcessEnv,
+      "/d",
+    );
+    expect(s).toEqual({ kind: "registry", root: "/d/registry", environment: "testnet", instance: "demo1" });
+    expect(resolveSource({ NETWORK: "sepolia", DEPLOYMENT_INSTANCE: "" } as NodeJS.ProcessEnv, "/d")).toEqual({
+      kind: "flat",
+      root: "/d",
+    });
   });
 });
 

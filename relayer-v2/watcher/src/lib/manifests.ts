@@ -67,17 +67,23 @@ const REGISTRY_ENVIRONMENT: Record<string, string> = { sepolia: "testnet", mainn
 
 /** Chooses registry when DEPLOYMENT_INSTANCE is set, else flat files (local/monorepo). */
 export function resolveSource(env: NodeJS.ProcessEnv, deploymentsRoot: string): DeploymentSource {
-  const instance = env.DEPLOYMENT_INSTANCE;
+  // Compose passes unset vars as EMPTY STRINGS (`${VAR:-}`), so `??` is not enough — treat
+  // "" as unset for every optional deployment var. (Mirrors the actor's resolveDeploymentSource.)
+  const val = (key: string): string | undefined => {
+    const v = env[key];
+    return v === undefined || v === "" ? undefined : v;
+  };
+  const instance = val("DEPLOYMENT_INSTANCE");
   if (!instance) return { kind: "flat", root: deploymentsRoot };
   const network = networkName(env);
-  const environment = env.DEPLOYMENT_ENVIRONMENT ?? REGISTRY_ENVIRONMENT[network];
+  const environment = val("DEPLOYMENT_ENVIRONMENT") ?? REGISTRY_ENVIRONMENT[network];
   if (!environment) {
     throw new Error(
       `DEPLOYMENT_INSTANCE is set but no registry environment maps to NETWORK=${network} ` +
         `(expected sepolia|mainnet, or set DEPLOYMENT_ENVIRONMENT explicitly).`,
     );
   }
-  const root = env.DEPLOYMENT_REGISTRY_DIR ?? join(deploymentsRoot, "registry");
+  const root = val("DEPLOYMENT_REGISTRY_DIR") ?? join(deploymentsRoot, "registry");
   return { kind: "registry", root, environment, instance };
 }
 
