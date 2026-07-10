@@ -15,10 +15,10 @@ import {
   MAX_LIMIT,
 } from "../src/lib/api-helpers";
 
-// Fixture manifests in the real monorepo schema (local manifests are generated artifacts,
-// not committed — see deployments/README.md).
+// Flat fixture manifests (local mode / monorepo e2e path — not committed at repo root).
 const DEPLOYMENTS = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "deployments");
-const REAL_DEPLOYMENTS = join(
+// Repo deployments root; its `registry/` submodule holds the real published manifests.
+const REPO_DEPLOYMENTS = join(
   dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "deployments",
 );
 
@@ -56,15 +56,16 @@ describe("config derivation from manifests (§7.2)", () => {
     expect(chains[0]!.manifest.contracts.privacyPool).toMatch(/^0x/);
   });
 
-  it("resolves sepolia from the committed real manifests", () => {
+  it("resolves sepolia from the central registry (DEPLOYMENT_INSTANCE=demo1)", () => {
     const chains = resolveChains(
       {
         NETWORK: "sepolia",
+        DEPLOYMENT_INSTANCE: "demo1",
         HUB_RPC: "https://rpc",
         CLIENT_A_RPC: "https://rpc",
         CLIENT_B_RPC: "https://rpc",
       } as NodeJS.ProcessEnv,
-      REAL_DEPLOYMENTS,
+      REPO_DEPLOYMENTS,
     );
     expect(chains.map((c) => [c.chainId, c.domain])).toEqual([
       [11155111, 0],
@@ -77,7 +78,22 @@ describe("config derivation from manifests (§7.2)", () => {
     expect(chains[0]!.manifest.deployBlock).toBe(10893598);
   });
 
-  it("missing manifests fail loudly (mainnet posture, §15.4)", () => {
+  it("missing registry instance fails loudly (mainnet posture, §15.4)", () => {
+    expect(() =>
+      resolveChains(
+        {
+          NETWORK: "mainnet",
+          DEPLOYMENT_INSTANCE: "does-not-exist",
+          HUB_RPC: "https://rpc",
+          CLIENT_A_RPC: "https://rpc",
+          CLIENT_B_RPC: "https://rpc",
+        } as NodeJS.ProcessEnv,
+        REPO_DEPLOYMENTS,
+      ),
+    ).toThrow(/Missing deployment registry instance/);
+  });
+
+  it("missing flat manifests also fail loudly (local/e2e path)", () => {
     expect(() =>
       resolveChains(
         {

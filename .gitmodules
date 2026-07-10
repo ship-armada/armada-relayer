@@ -1,0 +1,3 @@
+[submodule "deployments/registry"]
+	path = deployments/registry
+	url = https://github.com/ship-armada/armada-deployments
