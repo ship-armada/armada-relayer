@@ -10,6 +10,10 @@ COPY relayer-v2/watcher/tsconfig.json relayer-v2/watcher/ponder.config.ts relaye
 COPY relayer-v2/watcher/abis ./abis
 COPY relayer-v2/watcher/src ./src
 
+# `ponder start` runs codegen at boot and writes ponder-env.d.ts + generated/ into WORKDIR.
+# COPY leaves /app owned by root; give the runtime user ownership so those writes succeed
+# (no secrets involved — D2).
+RUN chown -R node:node /app
 USER node
 EXPOSE 42069
 CMD ["sh", "-c", "npx ponder start --schema ${DATABASE_SCHEMA:-watcher} --views-schema ${VIEWS_SCHEMA:-indexed}"]
