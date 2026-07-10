@@ -1,19 +1,23 @@
-// ABOUTME: Wires the state machine's DestinationSubmitter to the wallet manager and the
-// ABOUTME: per-domain HookRouter contracts (relayWithHook broadcast + own-tx receipt polling).
+// ABOUTME: Wires the state machine's DestinationSubmitter to the wallet manager: relayWithHook
+// ABOUTME: via CCTPHookRouter, receiveMessage fallback, receipt + mempool polling (v1 submitRelay).
 import { Interface } from "ethers";
 import type { WalletManager } from "../wallet/wallet-manager.js";
 import type { DestinationSubmitter, ReceiptInfo } from "./state-machine.js";
 import type { ActorMetrics } from "../metrics.js";
 
-// ASSUMED HookRouter ABI (DEV-4 family): v1 broadcasts `relayWithHook`; exact signature
-// unavailable in this workspace. Regenerate from real artifacts and diff before cutover.
+// contracts/cctp/CCTPHookRouter.sol:42 — verified against the monorepo source.
 const HOOK_ROUTER_IFACE = new Interface([
-  "function relayWithHook(bytes message, bytes attestation)",
+  "function relayWithHook(bytes calldata message, bytes calldata attestation) external returns (bool)",
+]);
+// v1 REAL_MESSAGE_TRANSMITTER_ABI fallback when no hookRouter is configured.
+const MESSAGE_TRANSMITTER_IFACE = new Interface([
+  "function receiveMessage(bytes calldata message, bytes calldata attestation) external returns (bool)",
 ]);
 
 export interface DomainTarget {
   chainId: number;
-  hookRouter: string;
+  hookRouter: string | null;
+  messageTransmitter: string;
 }
 
 export function createDestinationSubmitter(
@@ -29,13 +33,24 @@ export function createDestinationSubmitter(
 
   return {
     async submitRelayWithHook(domain, messageBytes, attestation) {
-      const { chainId, hookRouter } = chainOf(domain);
-      const data = HOOK_ROUTER_IFACE.encodeFunctionData("relayWithHook", [
-        messageBytes,
-        attestation,
-      ]);
+      const { chainId, hookRouter, messageTransmitter } = chainOf(domain);
+      const call = hookRouter
+        ? {
+            to: hookRouter,
+            data: HOOK_ROUTER_IFACE.encodeFunctionData("relayWithHook", [
+              messageBytes,
+              attestation,
+            ]),
+          }
+        : {
+            to: messageTransmitter,
+            data: MESSAGE_TRANSMITTER_IFACE.encodeFunctionData("receiveMessage", [
+              messageBytes,
+              attestation,
+            ]),
+          };
       metrics?.rpcRequest(chainId, "eth_sendRawTransaction");
-      const tx = await wallet.submit(chainId, { to: hookRouter, data });
+      const tx = await wallet.submit(chainId, call);
       return { hash: tx.hash };
     },
 
@@ -45,6 +60,13 @@ export function createDestinationSubmitter(
       const receipt = await wallet.provider(chainId).getTransactionReceipt(txHash);
       if (!receipt) return null;
       return { status: receipt.status ?? 0, blockNumber: BigInt(receipt.blockNumber) };
+    },
+
+    async isInMempool(domain, txHash): Promise<boolean> {
+      const { chainId } = chainOf(domain);
+      metrics?.rpcRequest(chainId, "eth_getTransactionByHash");
+      const tx = await wallet.provider(chainId).getTransaction(txHash);
+      return tx !== null;
     },
 
     resetNonce(domain) {

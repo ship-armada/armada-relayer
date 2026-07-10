@@ -25,6 +25,9 @@ export interface CctpJob {
   pollAttempts: number;
   lastIrisStatus: string | null;
   attestation: string | null;
+  /** Iris-returned message bytes (nonce/finality slots filled) — what actually gets
+   * broadcast; the attestation signs these, not the source-observed bytes. */
+  relayMessage: string | null;
   retryAttempts: number;
   nextRetryAt: Date | null;
   submittedTxHash: string | null;

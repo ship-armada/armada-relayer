@@ -1,36 +1,47 @@
-// ABOUTME: Chain-scoped duplicate-calldata cache (§6.2 step 8): identical calldata within
-// ABOUTME: 10 minutes on the same chain is rejected as DUPLICATE_TX. In-memory only (P4).
-import { keccak256, toUtf8Bytes } from "ethers";
+// ABOUTME: Chain-scoped duplicate-calldata cache ported from v1 wallet-manager.ts: key =
+// ABOUTME: chainId|keccak(to,data), 10-min TTL, stores the prior txHash (embedded in the 409 message).
+import { keccak256, solidityPacked } from "ethers";
+
+export const DEDUP_TTL_MS = 10 * 60 * 1000;
+
+interface DedupEntry {
+  txHash: string;
+  timestamp: number;
+}
 
 export class DedupCache {
-  private readonly entries = new Map<string, number>(); // key -> recordedAt ms
+  private readonly entries = new Map<string, DedupEntry>();
 
   constructor(
-    private readonly ttlMs: number = 600_000,
+    private readonly ttlMs: number = DEDUP_TTL_MS,
     private readonly now: () => number = Date.now,
   ) {}
 
-  private key(chainId: number, data: string): string {
-    return keccak256(toUtf8Bytes(`${chainId}:${data.toLowerCase()}`));
+  private key(chainId: number, to: string, data: string): string {
+    return `${chainId}|${keccak256(solidityPacked(["address", "bytes"], [to, data]))}`;
   }
 
-  has(chainId: number, data: string): boolean {
-    const key = this.key(chainId, data);
-    const at = this.entries.get(key);
-    if (at === undefined) return false;
-    if (this.now() - at > this.ttlMs) {
-      this.entries.delete(key);
-      return false;
+  /** Returns the prior txHash when the same (to, data) was broadcast within the TTL. */
+  lookup(chainId: number, to: string, data: string): string | null {
+    const entry = this.entries.get(this.key(chainId, to, data));
+    if (!entry) return null;
+    if (this.now() - entry.timestamp > this.ttlMs) {
+      this.entries.delete(this.key(chainId, to, data));
+      return null;
     }
-    return true;
+    return entry.txHash;
   }
 
-  record(chainId: number, data: string): void {
-    // Opportunistic sweep keeps the map bounded without a timer.
-    if (this.entries.size > 10_000) {
-      const cutoff = this.now() - this.ttlMs;
-      for (const [k, at] of this.entries) if (at < cutoff) this.entries.delete(k);
+  /** Recorded after successful broadcast (v1 behavior — failures may be retried). */
+  record(chainId: number, to: string, data: string, txHash: string): void {
+    this.entries.set(this.key(chainId, to, data), { txHash, timestamp: this.now() });
+  }
+
+  /** Periodic sweep (v1 cleanDedupCache, every 5 min). */
+  sweep(): void {
+    const cutoff = this.now() - this.ttlMs;
+    for (const [key, entry] of this.entries) {
+      if (entry.timestamp < cutoff) this.entries.delete(key);
     }
-    this.entries.set(this.key(chainId, data), this.now());
   }
 }

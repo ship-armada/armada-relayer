@@ -4,7 +4,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildConfig, type ActorConfig } from "./config/env.js";
 import { allChains } from "./config/networks.js";
-import { poolAddress } from "./config/manifests.js";
+import { poolAddress, gaslessWrapperAddress } from "./config/manifests.js";
 import { createPool } from "./db/pool.js";
 import { migrate } from "./db/migrate.js";
 import { PgJobsRepo } from "./db/jobs-repo.js";
@@ -19,7 +19,7 @@ import {
   chainlinkAggregator,
   type PriceSource,
 } from "./relay/price-source.js";
-import { PrivacyRelay, type ChainRelayTargets, type RelaySubmitter } from "./relay/privacy-relay.js";
+import { PrivacyRelay, type RelaySubmitter } from "./relay/privacy-relay.js";
 import { DedupCache } from "./relay/dedup-cache.js";
 import { addressToBytes32 } from "./jobs/classify.js";
 import { CctpStateMachine } from "./jobs/state-machine.js";
@@ -29,14 +29,17 @@ import { FallbackScanner, type ScannerChain } from "./jobs/fallback-scanner.js";
 import { IrisClient, MockAttestationClient } from "./jobs/iris-client.js";
 import { createMetrics } from "./metrics.js";
 import { createApp, type TxStatusResult } from "./http/server.js";
-import { classifyChain, newCounters, type ChainHealthReport } from "./http/health.js";
+import { classifyChain, Counters, type ChainHealthReport } from "./http/health.js";
 import { logger } from "./logger.js";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 async function main(): Promise<void> {
-  const config = buildConfig(process.env, process.env.DEPLOYMENTS_DIR ?? join(REPO_ROOT, "deployments"));
-  logger.info({ network: config.network }, "actor booting");
+  const config = buildConfig(
+    process.env,
+    process.env.DEPLOYMENTS_DIR ?? join(REPO_ROOT, "deployments"),
+  );
+  logger.info({ network: config.network, cctpMode: config.cctpMode }, "actor booting");
 
   const pool = createPool(config.databaseUrl);
   await migrate(config.databaseUrl);
@@ -44,7 +47,7 @@ async function main(): Promise<void> {
   const idempotency = new PgIdempotencyRepo(pool);
   const indexed = new PgIndexedReader(pool, config.indexedSchema);
   const metrics = createMetrics();
-  const counters = newCounters();
+  const counters = new Counters();
 
   const wallet = new WalletManager(config);
   const railgun = await bootRailgunWallet(config);
@@ -54,7 +57,10 @@ async function main(): Promise<void> {
     config.network === "local"
       ? new StaticPriceSource(config.ethUsdPriceStatic)
       : new ChainlinkPriceSource(
-          chainlinkAggregator(config.ethUsdFeedAddress!, wallet.provider(config.topology.hub.chainId)),
+          chainlinkAggregator(
+            config.ethUsdFeedAddress!,
+            wallet.provider(config.topology.hub.chainId),
+          ),
           {
             maxStalenessMs: config.ethUsdMaxStalenessMs,
             min: config.ethUsdMin,
@@ -91,16 +97,21 @@ async function main(): Promise<void> {
     },
   );
 
-  // --- relay pipeline (§6.2) ---
-  const targets = new Map<number, ChainRelayTargets>();
+  // --- relay pipeline (§6.2); allowlists per v1 armada-relayer.ts:237 ---
+  const hubDeployment = config.deployments.find((d) => d.chain.role === "hub")!;
+  const allowedTargets = new Map<number, Set<string>>();
+  const wrappersByChain = new Map<number, string>();
   for (const d of config.deployments) {
-    targets.set(d.chain.chainId, {
-      chainId: d.chain.chainId,
-      allowlist: new Set(
-        [poolAddress(d), d.manifest.contracts.wrapper].map((a) => a.toLowerCase()),
-      ),
-      wrapperAddress: d.manifest.contracts.wrapper,
-    });
+    const targets = [poolAddress(d)];
+    const wrapper = gaslessWrapperAddress(d);
+    if (wrapper) {
+      targets.push(wrapper);
+      wrappersByChain.set(d.chain.chainId, wrapper);
+    }
+    if (d.chain.role === "hub" && config.yieldManifest?.contracts.armadaYieldAdapter) {
+      targets.push(config.yieldManifest.contracts.armadaYieldAdapter);
+    }
+    allowedTargets.set(d.chain.chainId, new Set(targets.map((a) => a.toLowerCase())));
   }
   const submitter: RelaySubmitter = {
     tryAcquire: (chainId) => wallet.tryAcquire(chainId),
@@ -114,25 +125,36 @@ async function main(): Promise<void> {
       return wallet.submit(chainId, tx);
     },
   };
+  const dedup = new DedupCache();
+  setInterval(() => dedup.sweep(), 5 * 60 * 1000).unref?.();
   const relay = new PrivacyRelay({
-    targets,
+    allowedTargets,
     feeCalculator,
-    extractor: railgun,
+    gaslessCtx: { wrappersByChain },
+    broadcasterCtx: {
+      extractor: railgun,
+      privacyPoolAddress: hubDeployment.manifest.contracts.privacyPool!,
+      usdcAddress: hubDeployment.manifest.cctp.usdc,
+    },
     submitter,
-    dedup: new DedupCache(),
+    dedup,
     onOutcome: (selector, outcome, code) => metrics.relaySubmission(selector, outcome, code),
     onFeeReject: (code) => metrics.feeVerifierReject(code),
   });
 
   // --- CCTP job pipeline (§8.3–§8.7) ---
   const knownRecipients = new Set(config.deployments.map((d) => addressToBytes32(poolAddress(d))));
-  const hookRouterByDomain = new Map(
-    config.deployments.map((d) => [d.chain.domain, d.manifest.contracts.hookRouter]),
+  const hookRouterByDomain = new Map<number, string | null>(
+    config.deployments.map((d) => [d.chain.domain, d.manifest.contracts.hookRouter ?? null]),
   );
   const domainTargets = new Map<number, DomainTarget>(
     config.deployments.map((d) => [
       d.chain.domain,
-      { chainId: d.chain.chainId, hookRouter: d.manifest.contracts.hookRouter },
+      {
+        chainId: d.chain.chainId,
+        hookRouter: d.manifest.contracts.hookRouter ?? null,
+        messageTransmitter: d.manifest.cctp.messageTransmitter,
+      },
     ]),
   );
   const confirmationsByChain = new Map(
@@ -145,18 +167,18 @@ async function main(): Promise<void> {
     knownRecipients,
     hookRouterByDomain,
     confirmationsByChain,
-    irisMode: config.topology.irisMode,
+    irisMode: config.cctpMode === "mock" ? "mock" : "iris",
     now: () => new Date(),
     onTransition: (from, to) => metrics.jobTransition(from, to),
   };
   const machine = new CctpStateMachine({
     jobs,
     attestations:
-      config.topology.irisMode === "mock"
+      config.cctpMode === "mock"
         ? new MockAttestationClient()
-        : new IrisClient(config.topology.irisBaseUrl!),
+        : new IrisClient(config.irisBaseUrl!),
     submitter: createDestinationSubmitter(wallet, domainTargets, metrics),
-    irisMode: config.topology.irisMode,
+    irisMode: config.cctpMode === "mock" ? "mock" : "iris",
     stuckTxThresholdMs: config.stuckTxThresholdMs,
     maxAttestationAgeMs: config.maxAttestationAgeMs,
     now: () => new Date(),
@@ -164,14 +186,16 @@ async function main(): Promise<void> {
     onIrisPoll: (result) => metrics.irisPoll(result),
   });
   const scanner = new FallbackScanner({
-    chains: config.deployments.map((d): ScannerChain => ({
-      chainId: d.chain.chainId,
-      domain: d.chain.domain,
-      messageTransmitter: d.manifest.contracts.messageTransmitter,
-      deployBlock: d.manifest.deployBlock,
-      confirmations: d.chain.confirmations,
-      provider: wallet.provider(d.chain.chainId),
-    })),
+    chains: config.deployments.map(
+      (d): ScannerChain => ({
+        chainId: d.chain.chainId,
+        domain: d.chain.domain,
+        messageTransmitter: d.manifest.cctp.messageTransmitter,
+        deployBlock: d.manifest.deployBlock ?? 0,
+        confirmations: d.chain.confirmations,
+        provider: wallet.provider(d.chain.chainId),
+      }),
+    ),
     indexed,
     jobs,
     discovery,
@@ -207,15 +231,31 @@ async function main(): Promise<void> {
   const chainHealth = async (): Promise<ChainHealthReport[]> => {
     const progress = await indexed.watcherProgress();
     const byChain = new Map(progress.map((p) => [p.chainId, p]));
+    const counts = await jobs.countsByState();
     const nowMs = Date.now();
-    return allChains(config.topology).map((c) =>
-      classifyChain(nowMs, {
-        chainId: c.chainId,
+    return allChains(config.topology).map((c) => {
+      const domain = c.domain;
+      let pendingCount = 0;
+      let deadLetterCount = 0;
+      for (const [key, n] of counts) {
+        const [state, d] = key.split(":");
+        if (Number(d) !== domain) continue;
+        if (["detected", "awaiting_attestation", "attested", "submitted"].includes(state!)) {
+          pendingCount += n;
+        } else if (state === "dead_letter") {
+          deadLetterCount += n;
+        }
+      }
+      return classifyChain(nowMs, {
+        chainName: c.name,
+        domain,
         pollIntervalMs: c.pollingIntervalMs,
         nominalBlockTimeMs: c.nominalBlockTimeMs,
         progress: byChain.get(c.chainId),
-      }),
-    );
+        pendingCount,
+        deadLetterCount,
+      });
+    });
   };
   const txStatus = async (txHash: string, chainId?: number): Promise<TxStatusResult> => {
     const chainIds = chainId === undefined ? [...config.rpcUrls.keys()] : [chainId];
@@ -226,7 +266,11 @@ async function main(): Promise<void> {
         if (receipt) {
           return receipt.status === 1
             ? { status: "confirmed", blockNumber: receipt.blockNumber }
-            : { status: "failed", blockNumber: receipt.blockNumber, error: "reverted" };
+            : {
+                status: "failed",
+                blockNumber: receipt.blockNumber,
+                error: "Transaction reverted on-chain",
+              };
         }
       } catch {
         // unreachable chain during fan-out: keep looking

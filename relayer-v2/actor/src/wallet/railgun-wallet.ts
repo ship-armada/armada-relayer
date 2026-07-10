@@ -1,17 +1,20 @@
-// ABOUTME: Railgun 0zk wallet boot per §6.5: mnemonic required (boot-fail if absent), LevelDB
-// ABOUTME: on a persistent volume, mnemonic never logged. SDK behind a dynamic import (STUB-2).
+// ABOUTME: Railgun 0zk wallet boot ported from v1 (lib/sdk/init.ts + relayer/modules/
+// ABOUTME: railgun-wallet.ts): RailgunEngine.initForWallet, mnemonic wallet, fee-note extraction.
+import { mkdirSync } from "node:fs";
 import { logger } from "../logger.js";
 import type { ActorConfig } from "../config/env.js";
+import type { NoteAmountExtractor } from "../relay/broadcaster-fee-verifier.js";
 
-export interface RailgunWalletService {
+export interface RailgunWalletService extends NoteAmountExtractor {
   walletId: string;
   railgunAddress: string; // 0zk address — the only loggable identifiers (§6.5)
-  /**
-   * Decrypts the first note of a synthetic transact calldata via the relayer viewing key
-   * and returns the USDC amount destined to this relayer (broadcaster fee check, §6.2.5).
-   */
-  extractFeeNoteUsdcAmount(chainId: number, syntheticTransactCalldata: string): Promise<bigint>;
 }
+
+// v1 constants (relayer/modules/railgun-wallet.ts / lib/sdk/wallet.ts). The encryption key
+// encrypts the local LevelDB only — fixed POC constant, deliberately preserved from v1.
+const ENGINE_WALLET_SOURCE = "armadarelay";
+const DEFAULT_ENCRYPTION_KEY =
+  "0101010101010101010101010101010101010101010101010101010101010101";
 
 export function assertValidMnemonic(mnemonic: string | null): asserts mnemonic is string {
   if (!mnemonic) {
@@ -21,123 +24,134 @@ export function assertValidMnemonic(mnemonic: string | null): asserts mnemonic i
   }
   const words = mnemonic.trim().split(/\s+/);
   if (words.length !== 12 && words.length !== 24) {
-    throw new Error(
-      `RELAYER_RAILGUN_MNEMONIC must be 12 or 24 words, got ${words.length}`,
-    );
+    throw new Error(`RELAYER_RAILGUN_MNEMONIC must be 12 or 24 words, got ${words.length}`);
   }
 }
 
 /**
- * Boots the Railgun engine + wallet from the configured mnemonic.
- *
- * STUB-2 (.context/deviations.md): the SDK-backed implementation could not be verified
- * against v1's modules/railgun-wallet.ts in this workspace. It dynamically imports
- * @railgun-community/wallet (pinned in v1 at wallet 10.8.1 / engine 9.5.1, spec S6) and
- * fails the boot loudly if the SDK is not installed or its API differs.
+ * Boots the Railgun engine + relayer wallet, mirroring v1:
+ *   engine = RailgunEngine.initForWallet(source, leveldown(db), artifactGetter,
+ *     quickSync stubs, merkleroot-validator stub, txid stub, debugger, skipMerkletreeScans=false)
+ *   wallet = engine.createWalletFromMnemonic(DEFAULT_ENCRYPTION_KEY, mnemonic, 0, undefined)
+ * SDK loaded via dynamic import so unit tests run without the native deps installed.
  */
 export async function bootRailgunWallet(config: ActorConfig): Promise<RailgunWalletService> {
   assertValidMnemonic(config.railgunMnemonic);
   const mnemonic = config.railgunMnemonic;
 
-  let sdk: Record<string, unknown>;
+  let engineMod: Record<string, any>;
+  let sharedModels: Record<string, any>;
+  let leveldownMod: Record<string, any>;
+  let artifactsMod: Record<string, any>;
   try {
-    sdk = (await import("@railgun-community/wallet" as string)) as Record<string, unknown>;
+    engineMod = await import("@railgun-community/engine" as string);
+    sharedModels = await import("@railgun-community/shared-models" as string);
+    leveldownMod = await import("leveldown" as string);
+    artifactsMod = await import("railgun-circuit-test-artifacts" as string);
   } catch (err) {
     throw new Error(
-      "Railgun SDK (@railgun-community/wallet) is not installed/loadable. The actor cannot " +
-        "verify broadcaster fees without it. Install the v1-pinned versions (wallet 10.8.1 / " +
-        `engine 9.5.1, spec S6). Underlying error: ${(err as Error).message}`,
+      "Railgun SDK not loadable — install @railgun-community/engine 9.5.1, " +
+        "@railgun-community/shared-models 8.0.0, leveldown, railgun-circuit-test-artifacts " +
+        `(v1-pinned versions, spec S6). Underlying error: ${(err as Error).message}`,
     );
   }
 
-  // Documented SDK boot sequence; see STUB-2 for the verification caveat.
-  const { startRailgunEngine, createRailgunWallet } = sdk as {
-    startRailgunEngine: (...args: unknown[]) => Promise<unknown>;
-    createRailgunWallet: (
-      encryptionKey: string,
-      mnemonic: string,
-      creationBlockNumbers: unknown,
-    ) => Promise<{ id: string; railgunAddress: string }>;
+  const { RailgunEngine, TXIDVersion } = engineMod;
+  const { assertArtifactExists, ChainType } = sharedModels;
+  const leveldown = leveldownMod.default ?? leveldownMod;
+  const { getArtifact } = artifactsMod;
+
+  // Artifact getter ported from v1 lib/sdk/init.ts (test artifacts: 1x2, 2x2, 2x3, 8x4).
+  const artifactCache = new Map<string, unknown>();
+  const artifactGetter = {
+    assertArtifactExists,
+    getArtifacts: async (inputs: { nullifiers: bigint[]; commitmentsOut: bigint[] }) => {
+      const key = `${inputs.nullifiers.length}x${inputs.commitmentsOut.length}`;
+      const cached = artifactCache.get(key);
+      if (cached) return cached;
+      try {
+        const testArtifact = getArtifact(inputs.nullifiers.length, inputs.commitmentsOut.length);
+        const artifact = {
+          wasm: testArtifact.wasm,
+          zkey: testArtifact.zkey,
+          vkey: testArtifact.vkey,
+          dat: undefined,
+        };
+        artifactCache.set(key, artifact);
+        return artifact;
+      } catch (error) {
+        throw new Error(
+          `Failed to load artifacts for ${key}. Available circuits: 1x2, 2x2, 2x3, 8x4. Error: ${error}`,
+        );
+      }
+    },
+    getArtifactsPOI: async () => {
+      throw new Error("POI artifacts not available");
+    },
   };
-  if (typeof startRailgunEngine !== "function" || typeof createRailgunWallet !== "function") {
-    throw new Error("Railgun SDK API mismatch: expected startRailgunEngine/createRailgunWallet");
-  }
 
-  const levelDb = await createLevelDb(config.railgunDbPath);
-  await startRailgunEngine(
-    "armada-actor",
-    levelDb,
-    false, // shouldDebug
-    undefined, // artifact store (defaults)
-    false, // useNativeArtifacts
-    true, // skipMerkletreeScans — the actor only decrypts its own fee notes
-  );
-  // Encryption key: derived once per volume; stored beside the LevelDB (not a secret of
-  // the same class as the mnemonic — it encrypts the local DB only).
-  const encryptionKey = await loadOrCreateDbEncryptionKey(config.railgunDbPath);
-  const wallet = await createRailgunWallet(encryptionKey, mnemonic, undefined);
+  const engineDebugger = {
+    log: (msg: string) => {
+      if (process.env.DEBUG_ENGINE) logger.debug({ msg }, "engine");
+    },
+    error: (error: Error) => logger.error({ err: error.message }, "engine error"),
+    verboseScanLogging: false,
+  };
 
-  if (
-    config.broadcasterRailgunAddress &&
-    wallet.railgunAddress !== config.broadcasterRailgunAddress
-  ) {
-    throw new Error(
-      `BROADCASTER_RAILGUN_ADDRESS assertion failed: derived 0zk address ` +
-        `${wallet.railgunAddress} != configured ${config.broadcasterRailgunAddress}`,
-    );
-  }
-  logger.info(
-    { walletId: wallet.id, railgunAddress: wallet.railgunAddress },
-    "railgun wallet ready",
+  mkdirSync(config.railgunDbPath, { recursive: true });
+  const db = leveldown(config.railgunDbPath);
+
+  const engine = await RailgunEngine.initForWallet(
+    ENGINE_WALLET_SOURCE,
+    db,
+    artifactGetter,
+    // quick-sync stubs (v1: relayer scans nothing; it only decrypts its own fee notes)
+    async () => ({ commitmentEvents: [], unshieldEvents: [], nullifierEvents: [] }),
+    async () => [],
+    async () => true, // merkleroot validator stub
+    async () => ({ txidIndex: undefined, merkleroot: undefined }),
+    engineDebugger,
+    false, // skipMerkletreeScans
   );
+
+  const wallet = await engine.createWalletFromMnemonic(
+    DEFAULT_ENCRYPTION_KEY,
+    mnemonic,
+    0, // derivationIndex — fixed (v1)
+    undefined, // creationBlockNumbers — relayer doesn't scan history
+  );
+  const railgunAddress: string = wallet.getAddress();
+
+  if (config.broadcasterRailgunAddress) {
+    if (!config.broadcasterRailgunAddress.startsWith("0zk")) {
+      throw new Error("BROADCASTER_RAILGUN_ADDRESS must be a 0zk… Railgun address");
+    }
+    if (railgunAddress !== config.broadcasterRailgunAddress) {
+      throw new Error(
+        `BROADCASTER_RAILGUN_ADDRESS assertion failed: derived 0zk address ` +
+          `${railgunAddress} != configured ${config.broadcasterRailgunAddress}`,
+      );
+    }
+  }
+  logger.info({ walletId: wallet.id, railgunAddress }, "railgun wallet ready");
+
+  const hubChainId = config.topology.hub.chainId;
+  const chain = { type: ChainType.EVM, id: hubChainId };
 
   return {
     walletId: wallet.id,
-    railgunAddress: wallet.railgunAddress,
-    async extractFeeNoteUsdcAmount(chainId: number, calldata: string): Promise<bigint> {
-      const extract = (sdk as Record<string, unknown>)[
-        "extractFirstNoteERC20AmountMapFromTransactionRequest"
-      ] as ((...args: unknown[]) => Promise<Record<string, bigint>>) | undefined;
-      if (typeof extract !== "function") {
-        // Fail closed: the caller treats any extractor error as FEE_INSUFFICIENT (§6.2.5).
-        throw new Error(
-          "Railgun SDK API mismatch: extractFirstNoteERC20AmountMapFromTransactionRequest missing",
-        );
-      }
-      const map = await extract(wallet.id, networkForChain(chainId), { data: calldata }, false);
-      let total = 0n;
-      for (const amount of Object.values(map)) total += BigInt(amount);
-      return total;
+    railgunAddress,
+    // v1 broadcaster-fee-verifier.ts:153 — decrypts the first note of each output under the
+    // relayer viewing key, scoped to notes addressed to us, keyed by token address.
+    async extractFirstNoteERC20AmountMap(tx: { to: string; data: string }) {
+      const map: Record<string, bigint> = await wallet.extractFirstNoteERC20AmountMap(
+        TXIDVersion.V2_PoseidonMerkle,
+        chain,
+        { to: tx.to, data: tx.data },
+        false, // useRelayAdapt
+        tx.to, // privacy pool address (the synthetic transact target)
+      );
+      return map;
     },
   };
-}
-
-async function createLevelDb(path: string): Promise<unknown> {
-  const { default: Level } = (await import("leveldown" as string)) as {
-    default: (path: string) => unknown;
-  };
-  return Level(path);
-}
-
-async function loadOrCreateDbEncryptionKey(dbPath: string): Promise<string> {
-  const { existsSync, readFileSync, writeFileSync, mkdirSync } = await import("node:fs");
-  const { dirname, join } = await import("node:path");
-  const keyPath = join(dirname(dbPath), "railgun-db-key");
-  if (existsSync(keyPath)) return readFileSync(keyPath, "utf8").trim();
-  const { randomBytes } = await import("node:crypto");
-  const key = randomBytes(32).toString("hex");
-  mkdirSync(dirname(keyPath), { recursive: true });
-  writeFileSync(keyPath, key, { mode: 0o600 });
-  return key;
-}
-
-function networkForChain(chainId: number): string {
-  // Railgun SDK network names for the chains we submit through. Local anvil chains reuse
-  // the Ethereum network definition (v1 behavior; STUB-2 verification caveat applies).
-  const names: Record<number, string> = {
-    1: "Ethereum",
-    11155111: "EthereumSepolia",
-    31337: "Hardhat",
-  };
-  return names[chainId] ?? "Hardhat";
 }

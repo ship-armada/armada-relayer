@@ -3,6 +3,7 @@
 import { ponder } from "ponder:registry";
 import * as schema from "ponder:schema";
 import { decodeCctpHeader, messageHashOf, logRowId, dedupKey, serializeTopics } from "./lib/decode";
+import { hubDomain, networkName } from "./lib/manifests";
 
 type AnyEvent = {
   log: { logIndex: number; data: `0x${string}`; topics: readonly `0x${string}`[]; address: `0x${string}` };
@@ -94,7 +95,7 @@ ponder.on("PrivacyPool:CrossChainUnshieldInitiated", async ({ event, context }) 
     id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
     chainId: context.chain.id,
     kind: "unshield",
-    domain: Number(event.args.domain),
+    domain: Number(event.args.destinationDomain),
     amount: event.args.amount.toString(),
     nonce: event.args.nonce.toString(),
     txHash: event.transaction.hash,
@@ -108,7 +109,7 @@ ponder.on("PrivacyPoolClient:CrossChainShieldInitiated", async ({ event, context
     id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
     chainId: context.chain.id,
     kind: "shield",
-    domain: Number(event.args.domain),
+    domain: hubDomain(networkName(process.env)), // event carries no domain; destination is the hub
     amount: event.args.amount.toString(),
     nonce: event.args.nonce.toString(),
     txHash: event.transaction.hash,

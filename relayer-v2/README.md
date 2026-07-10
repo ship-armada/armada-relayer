@@ -33,8 +33,9 @@ watcher (Ponder, :42069)  ──writes──►  Postgres 16  ◄──reads/wri
 ### Local (full stack)
 
 ```bash
-# Prereqs: Anvil chains on the host (monorepo `npm run chains` + `npm run setup`),
-# manifests in deployments/local/.
+# Prereqs: Anvil chains on the host (monorepo `npm run chains` + `npm run setup`);
+# point DEPLOYMENTS_DIR at the monorepo's deployments/ (local manifests are generated
+# there by `npm run setup` as privacy-pool-{hub,client,clientB}.json).
 npm run relayer-v2          # docker compose up --build (postgres + watcher + actor)
 # with observability (local-only per ruling §17.2.3):
 docker compose -f relayer-v2/compose/docker-compose.yml -f relayer-v2/compose/docker-compose.obs.yml \
@@ -55,16 +56,18 @@ npm run actor:dev           # tsx watch (needs DATABASE_URL + RELAYER_RAILGUN_MN
 cp relayer-v2/compose/secrets.env.example relayer-v2/compose/secrets.env  # fill in
 npm run relayer-v2:sepolia
 # mainnet is a CONFIGURATION POSTURE (§7.2): config builds/validates, but boot fails loudly
-# until deployments/mainnet/ manifests exist.
+# until privacy-pool-*-mainnet.json manifests exist in deployments/.
 ```
 
 ## Env reference
 
 | Variable | Where | Default | Notes |
 |---|---|---|---|
-| `NETWORK` | both | `local` | `local\|sepolia\|mainnet` (§7.2) |
+| `NETWORK` (alias `DEPLOY_ENV`) | both | `local` | `local\|sepolia\|mainnet` (§7.2) |
+| `CCTP_MODE` | actor | `mock` local, `real` else | v1 semantics; mainnet+mock forbidden |
 | `DATABASE_URL` | both | — | per-role URLs in compose (`watcher_rw` / `actor_rw`, §5) |
-| `RPC_URL_<chainId>` | both | local defaults only | paid-key URLs are secrets (§11.1) |
+| `HUB_RPC` / `CLIENT_A_RPC` / `CLIENT_B_RPC` | both | local defaults only | v1 names; paid-key URLs are secrets (§11.1) |
+| `IRIS_API_URL` | actor | per network (§7.2) | override the Iris base URL |
 | `DEPLOYMENTS_DIR` | both | `../../deployments` | manifest root (§7.2) |
 | `RELAYER_PRIVATE_KEY` | actor | — | falls back to deployer key with a loud warning (§6.5) |
 | `RELAYER_RAILGUN_MNEMONIC` | actor | — | 12/24 words; boot-fails if absent (§6.5) |
@@ -72,16 +75,17 @@ npm run relayer-v2:sepolia
 | `RAILGUN_DB_PATH` | actor | `./state/railgun-db` | LevelDB on the `actor-railgun-db` volume |
 | `FEE_TTL_SECONDS` | actor | 300 | §6.1 |
 | `FEE_VARIANCE_BUFFER_BPS` | actor | 2000 | §6.1 |
-| `FEE_PROFIT_MARGIN_BPS` | actor | 1000 | v1 default unknown in this workspace (DEV-1) |
-| `ETH_USD_PRICE_STATIC` | actor | — (required) | emergency price floor, all networks (§8.8) |
+| `FEE_PROFIT_MARGIN_BPS` | actor | 0 | v1 hardcodes 0; bump for production |
+| `ETH_USD_PRICE_STATIC` (alias `ETH_USDC_PRICE`) | actor | — (required) | emergency price floor, all networks (§8.8) |
 | `ETH_USD_FEED_ADDRESS` | actor | — | required on sepolia/mainnet (§8.8) |
 | `ETH_USD_MAX_STALENESS_MS` | actor | 5400000 | §8.8.1 |
 | `ETH_USD_MIN` / `ETH_USD_MAX` | actor | 100 / 100000 | §8.8.2 |
 | `WORK_POLL_INTERVAL_MS` | actor | 2000 local / 5000 else | §8.3 |
-| `STUCK_TX_THRESHOLD_MS` | actor | 600000 (min 60000) | §6.4 |
-| `MAX_ATTESTATION_AGE_MS` | actor | 3600000 (min 60000) | §6.4 |
+| `RELAYER_STUCK_TX_THRESHOLD_MS` | actor | 600000 (min 60000) | §6.4 (v1 name; `STUCK_TX_THRESHOLD_MS` alias) |
+| `RELAYER_ATTESTATION_AGE_MS` | actor | 3600000 (min 60000) | §6.4 (v1 name; `MAX_ATTESTATION_AGE_MS` alias) |
 | `FALLBACK_ACTIVATE_AFTER_MS` | actor | 120000 | §8.7 |
-| `RELAY_RATE_PER_MIN` / `GET_RATE_PER_MIN` | actor | 10 / 60 | §6.3 |
+| `RELAYER_RATE_LIMIT_RELAY_PER_MIN` / `RELAYER_RATE_LIMIT_GET_PER_MIN` | actor | 10 / 60 | §6.3 (v1 names) |
+| `RELAYER_PORT` / `RELAYER_MAX_BODY_BYTES` | actor | 3001 / 262144 | v1 names |
 | `RELAYER_TRUST_PROXY` | actor | false | honor X-Forwarded-For only when true (§6.3) |
 | `INDEXED_SCHEMA` | actor | `indexed` | watcher's published views schema |
 | `DATABASE_SCHEMA` / `VIEWS_SCHEMA` | watcher | `watcher` / `indexed` | Ponder schemas (§5) |

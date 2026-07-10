@@ -75,6 +75,7 @@ export function mkJob(overrides: Partial<CctpJob> = {}): CctpJob {
     pollAttempts: 0,
     lastIrisStatus: null,
     attestation: null,
+    relayMessage: null,
     retryAttempts: 0,
     nextRetryAt: null,
     submittedTxHash: null,

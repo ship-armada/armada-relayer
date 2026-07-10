@@ -14,7 +14,7 @@ export interface DiscoveryContext {
   jobs: JobsRepo;
   indexed: IndexedReader;
   knownRecipients: ReadonlySet<string>; // bytes32-padded pool addresses, all chains (§8.5)
-  hookRouterByDomain: Map<number, string>;
+  hookRouterByDomain: Map<number, string | null>;
   confirmationsByChain: Map<number, number>;
   irisMode: "mock" | "iris";
   now: () => Date;
@@ -42,6 +42,7 @@ function newJob(msg: IndexedMessageSent, state: CctpJob["state"], now: Date): Cc
     pollAttempts: 0,
     lastIrisStatus: null,
     attestation: null,
+    relayMessage: null,
     retryAttempts: 0,
     nextRetryAt: null,
     submittedTxHash: null,

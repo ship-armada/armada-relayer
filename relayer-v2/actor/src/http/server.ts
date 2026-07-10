@@ -1,14 +1,15 @@
-// ABOUTME: Actor HTTP API (§9.1) — the v1-parity public surface: /, /fees, /relay, /status,
-// ABOUTME: /health plus the new /cctp/delivered cursor feed (P2) and Prometheus /metrics.
-import express, { type Express, type Request, type Response } from "express";
+// ABOUTME: Actor HTTP API — v1-parity public surface (flat {error, code} bodies, exact v1
+// ABOUTME: response shapes from http-api.ts) plus the new /cctp/delivered cursor feed (P2).
+import express, { type Express } from "express";
 import type { FeeCalculator } from "../relay/fee-calculator.js";
 import type { PrivacyRelay, RelayRequest } from "../relay/privacy-relay.js";
 import type { IdempotencyRepo } from "../db/idempotency-repo.js";
 import type { JobsRepo } from "../db/jobs-repo.js";
 import { RelayError } from "./errors.js";
 import { TokenBucketLimiter, rateLimitMiddleware } from "./rate-limiter.js";
-import type { ChainHealthReport, HealthCounters } from "./health.js";
-import { healthHttpStatus, rollup } from "./health.js";
+import type { ChainHealthReport } from "./health.js";
+import { Counters, healthHttpStatus, rollup } from "./health.js";
+import { SELECTOR_NAMES, selectorOf } from "../relay/selectors.js";
 import type { ActorMetrics } from "../metrics.js";
 import { logger } from "../logger.js";
 
@@ -28,7 +29,7 @@ export interface HttpDeps {
   /** Receipt lookup for /status — fan-out across chains when chainId omitted (§9.1). */
   txStatus: (txHash: string, chainId?: number) => Promise<TxStatusResult>;
   chainHealth: () => Promise<ChainHealthReport[]>;
-  counters: HealthCounters;
+  counters: Counters;
   metrics: ActorMetrics;
   trustProxy: boolean;
   bodyLimitBytes: number;
@@ -37,7 +38,7 @@ export interface HttpDeps {
   now?: () => Date;
 }
 
-const IDEMPOTENCY_KEY_MAX = 200;
+const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 
 export function createApp(deps: HttpDeps): Express {
   const app = express();
@@ -46,7 +47,7 @@ export function createApp(deps: HttpDeps): Express {
   app.use(express.json({ limit: deps.bodyLimitBytes })); // 256 KiB default (S2)
   const now = deps.now ?? (() => new Date());
 
-  // CORS: public read/write API, no cookies/auth (P3).
+  // CORS: public API, no cookies/auth (P3) — v1 uses cors() unrestricted.
   app.use((req, res, next) => {
     res.setHeader("access-control-allow-origin", "*");
     res.setHeader("access-control-allow-headers", "content-type");
@@ -72,27 +73,43 @@ export function createApp(deps: HttpDeps): Express {
   const relayLimiter = new TokenBucketLimiter(deps.relayRatePerMin);
   const getLimiter = new TokenBucketLimiter(deps.getRatePerMin);
   const onLimited = (endpoint: string): void => {
-    deps.counters.rateLimited += 1;
+    deps.counters.inc("rateLimited");
     deps.metrics.rateLimited(endpoint);
   };
   const relayLimit = rateLimitMiddleware(relayLimiter, "/relay", deps.trustProxy, onLimited);
   const getLimit = (endpoint: string) =>
     rateLimitMiddleware(getLimiter, endpoint, deps.trustProxy, onLimited);
 
-  app.get("/", getLimit("/"), (_req, res) => {
+  // v1: `/` and `/health` are NOT rate-limited.
+  app.get("/", (_req, res) => {
     res.json({
       service: "armada-actor",
-      endpoints: ["/fees", "/relay", "/status/:txHash", "/cctp/delivered", "/health", "/metrics"],
+      status: "running",
+      endpoints: [
+        "GET /fees",
+        "POST /relay",
+        "GET /status/:txHash",
+        "GET /cctp/delivered",
+        "GET /health",
+      ],
     });
   });
 
   app.get("/fees", getLimit("/fees"), async (req, res) => {
     const chainId = req.query.chainId === undefined ? deps.hubChainId : Number(req.query.chainId);
-    if (!deps.configuredChainIds.includes(chainId)) {
-      res.status(404).json({ error: { code: "INVALID_CHAIN", message: "unknown chain" } });
+    if (!Number.isInteger(chainId) || !deps.configuredChainIds.includes(chainId)) {
+      res.status(404).json({
+        error: `No fee schedule for chain ${chainId}`,
+        supported: deps.configuredChainIds,
+      });
       return;
     }
-    res.json(await deps.feeCalculator.getSchedule(chainId));
+    try {
+      res.json(await deps.feeCalculator.getSchedule(chainId));
+    } catch (err) {
+      logger.error({ err: (err as Error).message }, "fee calculation failed");
+      res.status(500).json({ error: "Failed to calculate fees" });
+    }
   });
 
   app.post("/relay", relayLimit, async (req, res) => {
@@ -101,20 +118,27 @@ export function createApp(deps: HttpDeps): Express {
       typeof body?.chainId !== "number" ||
       typeof body?.to !== "string" ||
       typeof body?.data !== "string" ||
-      typeof body?.feesCacheId !== "string" ||
-      (body.idempotencyKey !== undefined &&
-        (typeof body.idempotencyKey !== "string" ||
-          body.idempotencyKey.length === 0 ||
-          body.idempotencyKey.length > IDEMPOTENCY_KEY_MAX))
+      typeof body?.feesCacheId !== "string"
     ) {
-      res.status(400).json({ error: { code: "INVALID_DATA", message: "malformed RelayRequest" } });
+      res.status(400).json({ error: "Missing required fields: chainId, to, data, feesCacheId" });
       return;
     }
+    if (
+      body.idempotencyKey !== undefined &&
+      (typeof body.idempotencyKey !== "string" ||
+        body.idempotencyKey.length === 0 ||
+        body.idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH)
+    ) {
+      res.status(400).json({ error: "Invalid idempotencyKey", code: "INVALID_DATA" });
+      return;
+    }
+
+    const selectorName = SELECTOR_NAMES.get(selectorOf(body.data) ?? "") ?? "unknown";
 
     if (body.idempotencyKey) {
       const existing = await deps.idempotency.get(body.idempotencyKey);
       if (existing) {
-        deps.counters.idempotentReplay += 1;
+        deps.counters.inc("idempotentReplay");
         deps.metrics.idempotentReplay();
         res.json({ txHash: existing.txHash, status: existing.status });
         return;
@@ -123,7 +147,7 @@ export function createApp(deps: HttpDeps): Express {
 
     try {
       const result = await deps.relay.relay(body as RelayRequest);
-      deps.counters.submitSuccess += 1;
+      deps.counters.inc(`submitSuccess.${selectorName}`);
       if (body.idempotencyKey) {
         await deps.idempotency.put({
           key: body.idempotencyKey,
@@ -136,33 +160,41 @@ export function createApp(deps: HttpDeps): Express {
       }
       res.json(result);
     } catch (err) {
-      deps.counters.submitFail += 1;
       if (err instanceof RelayError) {
-        if (err.code === "FEE_INSUFFICIENT" || err.code === "FEE_EXPIRED") {
-          deps.counters.feeVerifierRejects += 1;
+        deps.counters.inc(`submitFail.${selectorName}.${err.code}`);
+        if (["FEE_INSUFFICIENT", "FEE_EXPIRED", "FEE_TOO_LOW"].includes(err.code)) {
+          deps.counters.inc(`feeVerifierRejects.${err.code}`);
         }
-        res.status(err.status).json({ error: { code: err.code, message: err.message } });
+        // v1 error body shape: flat { error: <message>, code: <CODE> }
+        res.status(err.status).json({ error: err.message, code: err.code });
       } else {
+        deps.counters.inc(`submitFail.${selectorName}.UNKNOWN_ERROR`);
         logger.error({ err: (err as Error).message }, "unexpected /relay failure");
-        res.status(500).json({ error: { code: "INTERNAL", message: "internal error" } });
+        res.status(500).json({ error: "Internal relay error", code: "UNKNOWN_ERROR" });
       }
     }
   });
 
   app.get("/status/:txHash", getLimit("/status"), async (req, res) => {
     const txHash = String(req.params.txHash ?? "");
-    if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
-      res.status(400).json({ error: { code: "INVALID_DATA", message: "malformed tx hash" } });
+    if (!txHash.startsWith("0x") || txHash.length !== 66) {
+      res.status(400).json({ error: "Invalid transaction hash" });
       return;
     }
-    const chainId = req.query.chainId === undefined ? undefined : Number(req.query.chainId);
-    if (chainId !== undefined && !deps.configuredChainIds.includes(chainId)) {
-      res.status(404).json({ error: { code: "INVALID_CHAIN", message: "unknown chain" } });
-      return;
+    let chainId: number | undefined;
+    if (req.query.chainId !== undefined) {
+      chainId = Number(req.query.chainId);
+      if (!Number.isInteger(chainId) || !deps.configuredChainIds.includes(chainId)) {
+        res.status(400).json({ error: `Invalid chainId: ${String(req.query.chainId)}` });
+        return;
+      }
     }
     const result = await deps.txStatus(txHash, chainId);
     if (result.status !== "pending") {
-      await deps.idempotency.updateStatusByTxHash(txHash, result.status, now());
+      // Backfill terminal idempotency status — fire-and-forget (v1 behavior).
+      void deps.idempotency
+        .updateStatusByTxHash(txHash, result.status, now())
+        .catch(() => {});
     }
     res.json(result);
   });
@@ -172,14 +204,12 @@ export function createApp(deps: HttpDeps): Express {
   app.get("/cctp/delivered", getLimit("/cctp/delivered"), async (req, res) => {
     const destinationDomain = Number(req.query.destinationDomain);
     if (!Number.isInteger(destinationDomain) || destinationDomain < 0) {
-      res.status(400).json({
-        error: { code: "INVALID_DATA", message: "destinationDomain is required" },
-      });
+      res.status(400).json({ error: "destinationDomain is required", code: "INVALID_DATA" });
       return;
     }
     const sinceMs = req.query.sinceMs === undefined ? 0 : Number(req.query.sinceMs);
     if (!Number.isFinite(sinceMs) || sinceMs < 0) {
-      res.status(400).json({ error: { code: "INVALID_DATA", message: "invalid sinceMs" } });
+      res.status(400).json({ error: "Invalid sinceMs", code: "INVALID_DATA" });
       return;
     }
     const limit = Math.min(
@@ -187,31 +217,29 @@ export function createApp(deps: HttpDeps): Express {
       200,
     );
     const records = await deps.jobs.delivered(destinationDomain, sinceMs, limit);
-    res.json({ records, generatedAt: now().toISOString() });
+    res.json({ records, generatedAt: now().getTime() });
   });
 
-  app.get("/health", getLimit("/health"), async (_req, res) => {
-    const chains = await deps.chainHealth();
-    const counts = await deps.jobs.countsByState();
-    let pendingCount = 0;
-    let deadLetterCount = 0;
-    for (const [key, n] of counts) {
-      const state = key.split(":")[0]!;
-      if (["detected", "awaiting_attestation", "attested", "submitted"].includes(state)) {
-        pendingCount += n;
-      } else if (state === "dead_letter") {
-        deadLetterCount += n;
-      }
+  // NOT rate-limited (v1). 200 for healthy|degraded, 503 otherwise, same body either way.
+  app.get("/health", async (_req, res) => {
+    try {
+      const chains = await deps.chainHealth();
+      const overall = rollup(chains);
+      res.status(healthHttpStatus(overall)).json({
+        status: overall,
+        chains,
+        generatedAt: now().getTime(),
+        counters: deps.counters.snapshot(),
+      });
+    } catch (err) {
+      logger.error({ err: (err as Error).message }, "health check failed");
+      res.status(503).json({
+        status: "unhealthy",
+        chains: [],
+        generatedAt: now().getTime(),
+        counters: deps.counters.snapshot(),
+      });
     }
-    const overall = rollup(chains);
-    res.status(healthHttpStatus(overall)).json({
-      status: overall,
-      chains,
-      pendingCount,
-      deadLetterCount,
-      counters: { ...deps.counters },
-      generatedAt: now().toISOString(),
-    });
   });
 
   // SHOULD be bound to the internal network / not exposed via the public proxy (§9.1).

@@ -1,18 +1,12 @@
-// ABOUTME: The POST /relay validation pipeline, order preserved from v1 (§6.2): chain, target
-// ABOUTME: allowlist, fee cache, selector allowlist, fee verification, lock, gas check, submit.
+// ABOUTME: The POST /relay validation pipeline, order preserved from v1 privacy-relay.ts:
+// ABOUTME: chain, target allowlist, fee cache, selector allowlist, fee verify, lock, gas, submit.
 import type { TransactionResponse } from "ethers";
 import { RelayError } from "../http/errors.js";
 import type { FeeCalculator } from "./fee-calculator.js";
 import { advertisedFee } from "./fee-calculator.js";
-import {
-  ALLOWED_SELECTORS,
-  GASLESS_SELECTORS,
-  advertisedFeeKeys,
-  selectorOf,
-} from "./selectors.js";
-import { verifyGaslessFee } from "./gasless-fee-verifier.js";
-import type { NoteAmountExtractor } from "./broadcaster-fee-verifier.js";
-import { verifyBroadcasterFee } from "./broadcaster-fee-verifier.js";
+import { ALLOWED_SELECTORS, GASLESS_SELECTORS, advertisedFeeKeys, selectorOf } from "./selectors.js";
+import { verifyGaslessFee, type GaslessVerifierContext } from "./gasless-fee-verifier.js";
+import { verifyBroadcasterFee, type BroadcasterVerifierContext } from "./broadcaster-fee-verifier.js";
 import type { DedupCache } from "./dedup-cache.js";
 import { logger, calldataPreview } from "../logger.js";
 
@@ -29,13 +23,6 @@ export interface RelayResult {
   status: "pending";
 }
 
-/** Per-chain relay context derived from manifests at boot. */
-export interface ChainRelayTargets {
-  chainId: number;
-  allowlist: Set<string>; // lowercase addresses accepted as `to`
-  wrapperAddress: string;
-}
-
 /** The submission surface PrivacyRelay needs from the wallet layer (testable seam). */
 export interface RelaySubmitter {
   tryAcquire(chainId: number): boolean;
@@ -48,9 +35,12 @@ export interface RelaySubmitter {
 }
 
 export interface PrivacyRelayDeps {
-  targets: Map<number, ChainRelayTargets>;
+  /** Per-chain allowed `to` targets, lowercase (v1: hub = pool + yieldAdapter + gasless
+   * wrapper; clients = poolClient + gasless wrapper client). */
+  allowedTargets: Map<number, Set<string>>;
   feeCalculator: FeeCalculator;
-  extractor: NoteAmountExtractor;
+  gaslessCtx: GaslessVerifierContext;
+  broadcasterCtx: BroadcasterVerifierContext;
   submitter: RelaySubmitter;
   dedup: DedupCache;
   onOutcome?: (selector: string, outcome: "success" | "fail", code: string) => void;
@@ -69,51 +59,56 @@ export class PrivacyRelay {
     } catch (err) {
       const code = err instanceof RelayError ? err.code : "SUBMISSION_FAILED";
       this.deps.onOutcome?.(selector, "fail", code);
-      if (err instanceof RelayError && (code === "FEE_INSUFFICIENT" || code === "FEE_EXPIRED")) {
-        this.deps.onFeeReject?.(code);
-      }
       throw err;
     }
   }
 
   private async pipeline(req: RelayRequest): Promise<RelayResult> {
     // 1. chainId configured
-    const targets = this.deps.targets.get(req.chainId);
-    if (!targets) throw new RelayError("INVALID_CHAIN", `chain ${req.chainId} not configured`);
+    const allowedForChain = this.deps.allowedTargets.get(req.chainId);
+    if (!allowedForChain) {
+      throw new RelayError("INVALID_CHAIN", `chain ${req.chainId} not configured`);
+    }
 
     // 2. target allowlist (case-insensitive)
-    if (typeof req.to !== "string" || !targets.allowlist.has(req.to.toLowerCase())) {
+    if (typeof req.to !== "string" || !req.to || !allowedForChain.has(req.to.toLowerCase())) {
       throw new RelayError("INVALID_TARGET", "target not in per-chain allowlist");
     }
 
-    // 3. fee cache resolution (current or previous-within-buffer)
+    // 3. fee cache resolution (current or previous, within variance buffer)
     const schedule = this.deps.feeCalculator.resolve(req.chainId, req.feesCacheId);
-    if (!schedule) throw new RelayError("FEE_EXPIRED", "feesCacheId does not resolve");
-
-    // 4. selector allowlist
-    const selector = selectorOf(req.data);
-    if (!selector || !ALLOWED_SELECTORS.has(selector)) {
-      throw new RelayError("INVALID_DATA", "selector not allowed");
+    if (!schedule) {
+      throw new RelayError(
+        "FEE_EXPIRED",
+        `Fee quote has expired or is invalid for chain ${req.chainId}. Please re-fetch fees.`,
+      );
     }
 
-    // 5. fee verification (gasless plaintext path vs proof-bearing decrypt path)
+    // 4. selector allowlist
+    if (!req.data || req.data.length < 10) {
+      throw new RelayError("INVALID_DATA", "Transaction data is empty or too short.");
+    }
+    const selector = selectorOf(req.data);
+    if (!selector || !ALLOWED_SELECTORS.has(selector)) {
+      throw new RelayError("INVALID_DATA", `Selector ${selector} is not allowed.`);
+    }
+
+    // 5. fee verification against the quoted schedule (v1: any RelayError here counts as a
+    // fee-verifier reject before rethrowing)
     const advertised = advertisedFee(schedule, advertisedFeeKeys(selector));
-    if (GASLESS_SELECTORS.has(selector)) {
-      verifyGaslessFee({
-        selector,
-        to: req.to,
-        data: req.data,
-        wrapperAddress: targets.wrapperAddress,
-        advertisedFee: advertised,
-      });
-    } else {
-      await verifyBroadcasterFee({
-        selector,
-        data: req.data,
-        chainId: req.chainId,
-        advertisedFee: advertised,
-        extractor: this.deps.extractor,
-      });
+    try {
+      if (GASLESS_SELECTORS.has(selector)) {
+        verifyGaslessFee(
+          this.deps.gaslessCtx,
+          { chainId: req.chainId, to: req.to, data: req.data },
+          advertised,
+        );
+      } else {
+        await verifyBroadcasterFee(this.deps.broadcasterCtx, req.data, advertised);
+      }
+    } catch (err) {
+      if (err instanceof RelayError) this.deps.onFeeReject?.(err.code);
+      throw err;
     }
 
     // 6. wallet lock
@@ -128,13 +123,21 @@ export class PrivacyRelay {
           to: req.to,
           data: req.data,
         });
-      } catch {
-        throw new RelayError("GAS_ESTIMATION_FAILED", "transaction would revert");
+      } catch (err) {
+        throw new RelayError(
+          "GAS_ESTIMATION_FAILED",
+          `Transaction would revert: ${(err as Error).message}`,
+        );
       }
 
-      // 8. duplicate-calldata dedup, then submit with 20% gas buffer
-      if (this.deps.dedup.has(req.chainId, req.data)) {
-        throw new RelayError("DUPLICATE_TX", "identical calldata relayed within dedup window");
+      // 8. duplicate-calldata dedup (v1: 409 message embeds the prior txHash — the frontend
+      // regexes it out for retry-resume), then submit with a 20% gas buffer
+      const duplicate = this.deps.dedup.lookup(req.chainId, req.to, req.data);
+      if (duplicate) {
+        throw new RelayError(
+          "DUPLICATE_TX",
+          `Duplicate transaction on chain ${req.chainId} (already submitted as ${duplicate})`,
+        );
       }
       let tx: Pick<TransactionResponse, "hash">;
       try {
@@ -150,7 +153,7 @@ export class PrivacyRelay {
         );
         throw new RelayError("SUBMISSION_FAILED", "broadcast failed");
       }
-      this.deps.dedup.record(req.chainId, req.data);
+      this.deps.dedup.record(req.chainId, req.to, req.data, tx.hash);
       return { txHash: tx.hash, status: "pending" };
     } finally {
       this.deps.submitter.release(req.chainId);

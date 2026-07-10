@@ -36,22 +36,16 @@ services:
     ports:
       - "42069:42069"
     # D2/S1: NO secret env vars are passed to the watcher container. RPC URLs may embed a
-    # paid key (§11.1) — provide them via WATCHER_RPC_* which map to plain RPC_URL_* here.
+    # paid key (§11.1) — provide them via HUB_RPC / CLIENT_A_RPC / CLIENT_B_RPC (v1 names).
     environment:
       NETWORK: ${NETWORK:-local}
       DATABASE_URL: postgres://watcher_rw:${WATCHER_DB_PASSWORD}@postgres:5432/armada
       DATABASE_SCHEMA: watcher
       VIEWS_SCHEMA: indexed
       DEPLOYMENTS_DIR: /deployments
-      RPC_URL_31337: ${RPC_URL_31337:-}
-      RPC_URL_31338: ${RPC_URL_31338:-}
-      RPC_URL_31339: ${RPC_URL_31339:-}
-      RPC_URL_11155111: ${RPC_URL_11155111:-}
-      RPC_URL_84532: ${RPC_URL_84532:-}
-      RPC_URL_421614: ${RPC_URL_421614:-}
-      RPC_URL_1: ${RPC_URL_1:-}
-      RPC_URL_8453: ${RPC_URL_8453:-}
-      RPC_URL_42161: ${RPC_URL_42161:-}
+      HUB_RPC: ${HUB_RPC:-}
+      CLIENT_A_RPC: ${CLIENT_A_RPC:-}
+      CLIENT_B_RPC: ${CLIENT_B_RPC:-}
     volumes:
       - ../../deployments:/deployments:ro
     extra_hosts:
@@ -93,15 +87,9 @@ services:
       RELAYER_PRIVATE_KEY: ${RELAYER_PRIVATE_KEY:-}
       RELAYER_RAILGUN_MNEMONIC: ${RELAYER_RAILGUN_MNEMONIC:-}
       BROADCASTER_RAILGUN_ADDRESS: ${BROADCASTER_RAILGUN_ADDRESS:-}
-      RPC_URL_31337: ${RPC_URL_31337:-}
-      RPC_URL_31338: ${RPC_URL_31338:-}
-      RPC_URL_31339: ${RPC_URL_31339:-}
-      RPC_URL_11155111: ${RPC_URL_11155111:-}
-      RPC_URL_84532: ${RPC_URL_84532:-}
-      RPC_URL_421614: ${RPC_URL_421614:-}
-      RPC_URL_1: ${RPC_URL_1:-}
-      RPC_URL_8453: ${RPC_URL_8453:-}
-      RPC_URL_42161: ${RPC_URL_42161:-}
+      HUB_RPC: ${HUB_RPC:-}
+      CLIENT_A_RPC: ${CLIENT_A_RPC:-}
+      CLIENT_B_RPC: ${CLIENT_B_RPC:-}
     # Secrets ONLY here (D2/S1): RELAYER_PRIVATE_KEY, RELAYER_RAILGUN_MNEMONIC,
     # optional BROADCASTER_RAILGUN_ADDRESS. File is gitignored.
     env_file:

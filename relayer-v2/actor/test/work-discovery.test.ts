@@ -57,7 +57,7 @@ describe("discoverWork (§8.3)", () => {
     await discoverWork(ctx);
     const job = await jobs.get(indexed.messages[0]!.id);
     expect(job!.state).toBe("skipped");
-    expect(job!.deadLetterReason).toBe("body_version:2");
+    expect(job!.deadLetterReason).toBe("body version 2 != BurnMessageV2 v1"); // v1 reason string
   });
 
   it("claims each message exactly once across ticks", async () => {

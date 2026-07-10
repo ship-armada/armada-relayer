@@ -1,49 +1,66 @@
-// ABOUTME: Health classification preserving v1 semantics (§6.6): per-chain freshness from the
-// ABOUTME: watcher's indexing progress in Postgres, worst-wins rollup, 503 on stale/unhealthy.
+// ABOUTME: Health classification and response shape ported from v1 (types.ts RelayerHealth /
+// ABOUTME: ChainHealth) — per-chain freshness from watcher progress, worst-wins rollup, counters.
 import type { WatcherChainProgress } from "../db/types.js";
 
 export type ChainHealthStatus = "healthy" | "degraded" | "stale" | "unhealthy";
 
+/** v1 ChainHealth row (relayer/types.ts:144) — field names are the frontend contract (B2). */
 export interface ChainHealthReport {
-  chainId: number;
+  chainName: string;
+  domain: number;
   status: ChainHealthStatus;
-  lastScanAt: string | null; // ISO; watcher's last indexed block timestamp
-  lagBlocks: number | null;
-  lastIndexedBlock: string | null;
+  lastProcessedBlock: number;
+  chainHead: number;
+  lagBlocks: number;
+  lastScanAt: number; // epoch ms; 0 when never scanned
+  lastError: { message: string; at: number } | null;
+  pendingCount: number;
+  deadLetterCount: number;
 }
 
 export interface ChainHealthInput {
-  chainId: number;
+  chainName: string;
+  domain: number;
   pollIntervalMs: number;
   nominalBlockTimeMs: number;
   progress: WatcherChainProgress | undefined;
   lastTickErrored?: boolean;
+  pendingCount: number;
+  deadLetterCount: number;
 }
 
 export function classifyChain(nowMs: number, input: ChainHealthInput): ChainHealthReport {
   const { progress } = input;
   const lastScanMs = progress?.lastIndexedBlockTimestamp?.getTime() ?? null;
   const ageMs = lastScanMs === null ? null : nowMs - lastScanMs;
-  // Lag estimated from timestamp age (the actor holds no chain head; D1 keeps RPC minimal).
+  const lastProcessedBlock = progress === undefined ? 0 : Number(progress.lastIndexedBlock);
+  // The actor holds no chain head (D1 keeps its RPC minimal) — head and lag are estimated
+  // from the indexing-timestamp age and the chain's nominal block time.
   const lagBlocks =
-    ageMs === null ? null : Math.max(0, Math.floor(ageMs / input.nominalBlockTimeMs) - 1);
+    ageMs === null ? 0 : Math.max(0, Math.floor(ageMs / input.nominalBlockTimeMs) - 1);
+  const chainHead = lastProcessedBlock + lagBlocks;
 
   let status: ChainHealthStatus;
   if (progress === undefined || ageMs === null || ageMs > 10 * input.pollIntervalMs) {
     status = "unhealthy"; // never scanned, or > 10× poll interval
   } else if (ageMs > 3 * input.pollIntervalMs) {
     status = "stale";
-  } else if (input.lastTickErrored || (lagBlocks !== null && lagBlocks > 100)) {
+  } else if (input.lastTickErrored || lagBlocks > 100) {
     status = "degraded";
   } else {
     status = "healthy";
   }
   return {
-    chainId: input.chainId,
+    chainName: input.chainName,
+    domain: input.domain,
     status,
-    lastScanAt: lastScanMs === null ? null : new Date(lastScanMs).toISOString(),
+    lastProcessedBlock,
+    chainHead,
     lagBlocks,
-    lastIndexedBlock: progress ? progress.lastIndexedBlock.toString() : null,
+    lastScanAt: lastScanMs ?? 0,
+    lastError: null,
+    pendingCount: input.pendingCount,
+    deadLetterCount: input.deadLetterCount,
   };
 }
 
@@ -62,26 +79,25 @@ export function rollup(chains: ChainHealthReport[]): ChainHealthStatus {
   return worst;
 }
 
-/** /health returns 503 only when the rollup is stale or unhealthy (§6.6). */
+/** v1: 200 for healthy|degraded, 503 otherwise. */
 export function healthHttpStatus(status: ChainHealthStatus): number {
-  return status === "stale" || status === "unhealthy" ? 503 : 200;
+  return status === "healthy" || status === "degraded" ? 200 : 503;
 }
 
-/** In-process counters kept for the v1-compatible /health `counters` field (§9.1, §16.3). */
-export interface HealthCounters {
-  submitSuccess: number;
-  submitFail: number;
-  feeVerifierRejects: number;
-  rateLimited: number;
-  idempotentReplay: number;
-}
+/**
+ * In-process counters with v1's dotted-key scheme (relayer/modules/counters.ts):
+ * submitSuccess.<selector>, submitFail.<selector>.<CODE>, feeVerifierRejects.<CODE>,
+ * rateLimited, idempotentReplay, messageFilterReject, revertedTx.<chainId>, stuckTx.<chainId>.
+ * Reset on restart (v1 behavior); Prometheus is the durable view (§16.3).
+ */
+export class Counters {
+  private readonly map = new Map<string, number>();
 
-export function newCounters(): HealthCounters {
-  return {
-    submitSuccess: 0,
-    submitFail: 0,
-    feeVerifierRejects: 0,
-    rateLimited: 0,
-    idempotentReplay: 0,
-  };
+  inc(key: string, by = 1): void {
+    this.map.set(key, (this.map.get(key) ?? 0) + by);
+  }
+
+  snapshot(): Record<string, number> {
+    return Object.fromEntries(this.map);
+  }
 }

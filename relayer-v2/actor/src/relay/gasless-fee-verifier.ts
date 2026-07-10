@@ -1,30 +1,40 @@
-// ABOUTME: Gasless-path fee verification (§6.2 step 5): decode the plaintext fee argument,
-// ABOUTME: assert the target is the configured wrapper, assert fee >= advertised.
+// ABOUTME: Gasless-path fee verification ported from v1 gasless-fee-verifier.ts: per-chain
+// ABOUTME: wrapper check, plaintext fee decode (arg 2 / permitInput[2]), fee >= advertised.
 import { RelayError } from "../http/errors.js";
 import { decodeGaslessFee } from "./selectors.js";
 
-export interface GaslessVerifyParams {
-  selector: string;
-  to: string;
-  data: string;
-  wrapperAddress: string; // configured wrapper for the request chain
-  advertisedFee: bigint;
+/** Mirrors v1 GaslessVerifierContext: hub -> GaslessShieldWrapper, clients ->
+ * GaslessShieldWrapperClient (from the privacy-pool manifests). */
+export interface GaslessVerifierContext {
+  wrappersByChain: Map<number, string>;
 }
 
-export function verifyGaslessFee(params: GaslessVerifyParams): void {
-  if (params.to.toLowerCase() !== params.wrapperAddress.toLowerCase()) {
-    throw new RelayError("INVALID_TARGET", "gasless calls must target the configured wrapper");
+export function verifyGaslessFee(
+  ctx: GaslessVerifierContext,
+  request: { chainId: number; to: string; data: string },
+  advertisedFee: bigint,
+): void {
+  const expectedWrapper = ctx.wrappersByChain.get(request.chainId);
+  if (!expectedWrapper) {
+    throw new RelayError(
+      "INVALID_CHAIN",
+      `No gasless wrapper configured for chain ${request.chainId}.`,
+    );
   }
+  if (request.to.toLowerCase() !== expectedWrapper.toLowerCase()) {
+    throw new RelayError("INVALID_TARGET", "Gasless calls must target the configured wrapper.");
+  }
+  const selector = request.data.slice(0, 10).toLowerCase();
   let fee: bigint;
   try {
-    fee = decodeGaslessFee(params.selector, params.data);
+    fee = decodeGaslessFee(selector, request.data);
   } catch {
-    throw new RelayError("INVALID_DATA", "gasless calldata does not decode");
+    throw new RelayError("INVALID_DATA", "Gasless wrapper calldata did not decode.");
   }
-  if (fee < params.advertisedFee) {
+  if (fee < advertisedFee) {
     throw new RelayError(
       "FEE_INSUFFICIENT",
-      `gasless fee ${fee} below advertised ${params.advertisedFee}`,
+      `Gasless wrapper fee ${fee} is below advertised fee ${advertisedFee}`,
     );
   }
 }

@@ -5,10 +5,14 @@ export type NetworkName = "local" | "sepolia" | "mainnet";
 
 export type ChainRole = "hub" | "client";
 
+/** Manifest file-name prefix — v1 convention: hub / client / clientB (historical, not client2). */
+export type ManifestPrefix = "hub" | "client" | "clientB";
+
 export interface ChainTopology {
   chainId: number;
   name: string;
   role: ChainRole;
+  manifestPrefix: ManifestPrefix;
   domain: number;
   rpcUrlEnv: string; // env var holding the RPC URL (may embed a paid key => secret)
   defaultRpcUrl?: string; // only local mode has committed defaults
@@ -34,8 +38,9 @@ const TOPOLOGIES: Record<NetworkName, NetworkTopology> = {
       chainId: 31337,
       name: "anvil-hub",
       role: "hub",
+      manifestPrefix: "hub",
       domain: 100,
-      rpcUrlEnv: "RPC_URL_31337",
+      rpcUrlEnv: "HUB_RPC",
       defaultRpcUrl: "http://127.0.0.1:8545",
       pollingIntervalMs: 1000,
       confirmations: 0,
@@ -46,8 +51,9 @@ const TOPOLOGIES: Record<NetworkName, NetworkTopology> = {
         chainId: 31338,
         name: "anvil-client-a",
         role: "client",
+        manifestPrefix: "client",
         domain: 101,
-        rpcUrlEnv: "RPC_URL_31338",
+        rpcUrlEnv: "CLIENT_A_RPC",
         defaultRpcUrl: "http://127.0.0.1:8546",
         pollingIntervalMs: 1000,
         confirmations: 0,
@@ -57,8 +63,9 @@ const TOPOLOGIES: Record<NetworkName, NetworkTopology> = {
         chainId: 31339,
         name: "anvil-client-b",
         role: "client",
+        manifestPrefix: "clientB",
         domain: 102,
-        rpcUrlEnv: "RPC_URL_31339",
+        rpcUrlEnv: "CLIENT_B_RPC",
         defaultRpcUrl: "http://127.0.0.1:8547",
         pollingIntervalMs: 1000,
         confirmations: 0,
@@ -74,8 +81,9 @@ const TOPOLOGIES: Record<NetworkName, NetworkTopology> = {
       chainId: 11155111,
       name: "ethereum-sepolia",
       role: "hub",
+      manifestPrefix: "hub",
       domain: 0,
-      rpcUrlEnv: "RPC_URL_11155111",
+      rpcUrlEnv: "HUB_RPC",
       pollingIntervalMs: 12000,
       confirmations: 6,
       nominalBlockTimeMs: 12000,
@@ -85,8 +93,9 @@ const TOPOLOGIES: Record<NetworkName, NetworkTopology> = {
         chainId: 84532,
         name: "base-sepolia",
         role: "client",
+        manifestPrefix: "client",
         domain: 6,
-        rpcUrlEnv: "RPC_URL_84532",
+        rpcUrlEnv: "CLIENT_A_RPC",
         pollingIntervalMs: 5000,
         confirmations: 2,
         nominalBlockTimeMs: 2000,
@@ -95,8 +104,9 @@ const TOPOLOGIES: Record<NetworkName, NetworkTopology> = {
         chainId: 421614,
         name: "arbitrum-sepolia",
         role: "client",
+        manifestPrefix: "clientB",
         domain: 3,
-        rpcUrlEnv: "RPC_URL_421614",
+        rpcUrlEnv: "CLIENT_B_RPC",
         pollingIntervalMs: 5000,
         confirmations: 2,
         nominalBlockTimeMs: 250,
@@ -111,8 +121,9 @@ const TOPOLOGIES: Record<NetworkName, NetworkTopology> = {
       chainId: 1,
       name: "ethereum",
       role: "hub",
+      manifestPrefix: "hub",
       domain: 0,
-      rpcUrlEnv: "RPC_URL_1",
+      rpcUrlEnv: "HUB_RPC",
       pollingIntervalMs: 12000,
       confirmations: 6,
       nominalBlockTimeMs: 12000,
@@ -124,8 +135,9 @@ const TOPOLOGIES: Record<NetworkName, NetworkTopology> = {
         chainId: 8453,
         name: "base",
         role: "client",
+        manifestPrefix: "client",
         domain: 6,
-        rpcUrlEnv: "RPC_URL_8453",
+        rpcUrlEnv: "CLIENT_A_RPC",
         pollingIntervalMs: 5000,
         confirmations: 2,
         nominalBlockTimeMs: 2000,
@@ -134,8 +146,9 @@ const TOPOLOGIES: Record<NetworkName, NetworkTopology> = {
         chainId: 42161,
         name: "arbitrum-one",
         role: "client",
+        manifestPrefix: "clientB",
         domain: 3,
-        rpcUrlEnv: "RPC_URL_42161",
+        rpcUrlEnv: "CLIENT_B_RPC",
         pollingIntervalMs: 5000,
         confirmations: 2,
         nominalBlockTimeMs: 250,

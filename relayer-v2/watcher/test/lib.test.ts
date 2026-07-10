@@ -15,7 +15,12 @@ import {
   MAX_LIMIT,
 } from "../src/lib/api-helpers";
 
-const DEPLOYMENTS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "deployments");
+// Fixture manifests in the real monorepo schema (local manifests are generated artifacts,
+// not committed — see deployments/README.md).
+const DEPLOYMENTS = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "deployments");
+const REAL_DEPLOYMENTS = join(
+  dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "deployments",
+);
 
 describe("decodeCctpHeader", () => {
   it("decodes domains and nonce from a V2 header", () => {
@@ -51,14 +56,35 @@ describe("config derivation from manifests (§7.2)", () => {
     expect(chains[0]!.manifest.contracts.privacyPool).toMatch(/^0x/);
   });
 
+  it("resolves sepolia from the committed real manifests", () => {
+    const chains = resolveChains(
+      {
+        NETWORK: "sepolia",
+        HUB_RPC: "https://rpc",
+        CLIENT_A_RPC: "https://rpc",
+        CLIENT_B_RPC: "https://rpc",
+      } as NodeJS.ProcessEnv,
+      REAL_DEPLOYMENTS,
+    );
+    expect(chains.map((c) => [c.chainId, c.domain])).toEqual([
+      [11155111, 0],
+      [84532, 6],
+      [421614, 3],
+    ]);
+    expect(chains[0]!.manifest.contracts.privacyPool).toBe(
+      "0x014aC1dfC2Bde83d4be2CFFb5bea4dE942DAD77F",
+    );
+    expect(chains[0]!.manifest.deployBlock).toBe(10893598);
+  });
+
   it("missing manifests fail loudly (mainnet posture, §15.4)", () => {
     expect(() =>
       resolveChains(
         {
           NETWORK: "mainnet",
-          RPC_URL_1: "https://rpc",
-          RPC_URL_8453: "https://rpc",
-          RPC_URL_42161: "https://rpc",
+          HUB_RPC: "https://rpc",
+          CLIENT_A_RPC: "https://rpc",
+          CLIENT_B_RPC: "https://rpc",
         } as NodeJS.ProcessEnv,
         DEPLOYMENTS,
       ),
@@ -68,7 +94,7 @@ describe("config derivation from manifests (§7.2)", () => {
   it("missing RPC URLs fail loudly on non-local networks", () => {
     expect(() =>
       resolveChains({ NETWORK: "sepolia" } as NodeJS.ProcessEnv, DEPLOYMENTS),
-    ).toThrow(/RPC_URL_11155111/);
+    ).toThrow(/HUB_RPC/);
   });
 
   it("rejects unknown NETWORK values", () => {

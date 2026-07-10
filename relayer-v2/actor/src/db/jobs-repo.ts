@@ -9,6 +9,7 @@ export interface JobPatch {
   pollAttempts?: number;
   lastIrisStatus?: string | null;
   attestation?: string | null;
+  relayMessage?: string | null;
   retryAttempts?: number;
   nextRetryAt?: Date | null;
   submittedTxHash?: string | null;
@@ -51,6 +52,7 @@ const COLUMN_OF: Record<keyof JobPatch, string> = {
   pollAttempts: "poll_attempts",
   lastIrisStatus: "last_iris_status",
   attestation: "attestation",
+  relayMessage: "relay_message",
   retryAttempts: "retry_attempts",
   nextRetryAt: "next_retry_at",
   submittedTxHash: "submitted_tx_hash",
@@ -76,6 +78,7 @@ function rowToJob(r: Record<string, unknown>): CctpJob {
     pollAttempts: r.poll_attempts as number,
     lastIrisStatus: (r.last_iris_status as string) ?? null,
     attestation: (r.attestation as string) ?? null,
+    relayMessage: (r.relay_message as string) ?? null,
     retryAttempts: r.retry_attempts as number,
     nextRetryAt: (r.next_retry_at as Date) ?? null,
     submittedTxHash: (r.submitted_tx_hash as string) ?? null,
@@ -96,14 +99,14 @@ export class PgJobsRepo implements JobsRepo {
       `INSERT INTO actor.cctp_jobs (
          dedup_key, message_hash, message_bytes, source_domain, destination_domain, nonce,
          source_tx_hash, source_block, state, detected_at, poll_attempts, last_iris_status,
-         attestation, retry_attempts, next_retry_at, submitted_tx_hash, submitted_at,
+         attestation, relay_message, retry_attempts, next_retry_at, submitted_tx_hash, submitted_at,
          delivered_tx_hash, delivered_block, delivered_at, dead_letter_reason, updated_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
        ON CONFLICT (dedup_key) DO NOTHING`,
       [
         job.dedupKey, job.messageHash, job.messageBytes, job.sourceDomain, job.destinationDomain,
         job.nonce, job.sourceTxHash, job.sourceBlock.toString(), job.state, job.detectedAt,
-        job.pollAttempts, job.lastIrisStatus, job.attestation, job.retryAttempts, job.nextRetryAt,
+        job.pollAttempts, job.lastIrisStatus, job.attestation, job.relayMessage, job.retryAttempts, job.nextRetryAt,
         job.submittedTxHash, job.submittedAt, job.deliveredTxHash,
         job.deliveredBlock === null ? null : job.deliveredBlock.toString(),
         job.deliveredAt, job.deadLetterReason, job.updatedAt,

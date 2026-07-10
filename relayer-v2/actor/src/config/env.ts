@@ -1,14 +1,19 @@
-// ABOUTME: Assembles the full actor runtime configuration from NETWORK + env vars + manifests,
-// ABOUTME: enforcing the boot-fail rules of spec §6.5, §7.2, §8.8 and the constants of §6.
+// ABOUTME: Assembles the actor runtime configuration from NETWORK + env vars + manifests using
+// ABOUTME: v1's env-var names (HUB_RPC/CLIENT_A_RPC/CLIENT_B_RPC, CCTP_MODE, RELAYER_*), boot-fail rules.
 import type { NetworkTopology } from "./networks.js";
 import { assertDomainPairing, getTopology, allChains } from "./networks.js";
-import type { ChainDeployment } from "./manifests.js";
-import { loadAllManifests } from "./manifests.js";
+import type { ChainDeployment, YieldManifest } from "./manifests.js";
+import { loadAllManifests, loadYieldManifest } from "./manifests.js";
+
+export type CctpMode = "mock" | "real";
 
 export interface ActorConfig {
   network: NetworkTopology["network"];
   topology: NetworkTopology;
+  cctpMode: CctpMode;
+  irisBaseUrl: string | null;
   deployments: ChainDeployment[];
+  yieldManifest: YieldManifest | null;
   rpcUrls: Map<number, string>; // chainId -> URL
   databaseUrl: string;
   port: number;
@@ -23,7 +28,7 @@ export interface ActorConfig {
   // fee schedule (§6.1)
   feeTtlSeconds: number;
   feeVarianceBufferBps: number;
-  profitMarginBps: number;
+  profitMarginBps: number; // v1 hardcodes 0; env FEE_PROFIT_MARGIN_BPS is a v2 knob
   // price source (§8.8)
   ethUsdPriceStatic: number;
   ethUsdFeedAddress: string | null;
@@ -43,21 +48,40 @@ export interface ActorConfig {
   indexedSchema: string;
 }
 
-function num(env: NodeJS.ProcessEnv, key: string, dflt: number, min?: number): number {
-  const raw = env[key];
-  if (raw === undefined || raw === "") return dflt;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) throw new Error(`${key} must be a number, got ${JSON.stringify(raw)}`);
-  if (min !== undefined && n < min) {
-    throw new Error(`${key} must be >= ${min}, got ${n}`);
+function num(env: NodeJS.ProcessEnv, keys: string | string[], dflt: number, min?: number): number {
+  const keyList = Array.isArray(keys) ? keys : [keys];
+  for (const key of keyList) {
+    const raw = env[key];
+    if (raw === undefined || raw === "") continue;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) {
+      throw new Error(`${key} must be a number, got ${JSON.stringify(raw)}`);
+    }
+    if (min !== undefined && n < min) throw new Error(`${key} must be >= ${min}, got ${n}`);
+    return n;
   }
-  return n;
+  return dflt;
 }
 
 export function buildConfig(env: NodeJS.ProcessEnv, deploymentsRoot: string): ActorConfig {
-  const network = env.NETWORK ?? "local";
+  // NETWORK is the v2 spec name; DEPLOY_ENV is v1's — accept both.
+  const network = env.NETWORK ?? env.DEPLOY_ENV ?? "local";
   const topology = getTopology(network);
   assertDomainPairing(topology);
+
+  // CCTP_MODE per v1 config: mock|real; mainnet+mock is forbidden.
+  const cctpMode = (env.CCTP_MODE ?? (topology.network === "local" ? "mock" : "real")) as CctpMode;
+  if (cctpMode !== "mock" && cctpMode !== "real") {
+    throw new Error(`CCTP_MODE must be mock|real, got ${JSON.stringify(env.CCTP_MODE)}`);
+  }
+  if (topology.network === "mainnet" && cctpMode === "mock") {
+    throw new Error("CCTP_MODE=mock is forbidden on mainnet");
+  }
+  const irisBaseUrl =
+    cctpMode === "mock" ? null : (env.IRIS_API_URL ?? topology.irisBaseUrl);
+  if (cctpMode === "real" && !irisBaseUrl) {
+    throw new Error("CCTP_MODE=real requires an Iris API URL");
+  }
 
   const rpcUrls = new Map<number, string>();
   for (const chain of allChains(topology)) {
@@ -79,7 +103,8 @@ export function buildConfig(env: NodeJS.ProcessEnv, deploymentsRoot: string): Ac
       `ETH_USD_FEED_ADDRESS is required on NETWORK=${network} (Chainlink ETH/USD on the hub chain, §8.8)`,
     );
   }
-  const ethUsdPriceStatic = num(env, "ETH_USD_PRICE_STATIC", NaN);
+  // ETH_USD_PRICE_STATIC is the v2 spec name; ETH_USDC_PRICE is v1's — accept both.
+  const ethUsdPriceStatic = num(env, ["ETH_USD_PRICE_STATIC", "ETH_USDC_PRICE"], NaN);
   if (!Number.isFinite(ethUsdPriceStatic) || ethUsdPriceStatic <= 0) {
     throw new Error(
       "ETH_USD_PRICE_STATIC must be set (> 0) on all networks — it is the emergency price floor (§8.8)",
@@ -89,16 +114,20 @@ export function buildConfig(env: NodeJS.ProcessEnv, deploymentsRoot: string): Ac
   // Manifests load last so cheap env misconfiguration surfaces before missing-manifest
   // errors; both fail the boot loudly either way (§7.2).
   const deployments = loadAllManifests(deploymentsRoot, topology);
+  const yieldManifest = loadYieldManifest(deploymentsRoot, topology.network);
 
   return {
     network: topology.network,
     topology,
+    cctpMode,
+    irisBaseUrl,
     deployments,
+    yieldManifest,
     rpcUrls,
     databaseUrl,
-    port: num(env, "ACTOR_PORT", 3001),
+    port: num(env, ["RELAYER_PORT", "ACTOR_PORT"], 3001),
     trustProxy: env.RELAYER_TRUST_PROXY === "true",
-    bodyLimitBytes: num(env, "BODY_LIMIT_BYTES", 256 * 1024),
+    bodyLimitBytes: num(env, ["RELAYER_MAX_BODY_BYTES", "BODY_LIMIT_BYTES"], 256 * 1024),
     relayerPrivateKey: env.RELAYER_PRIVATE_KEY ?? null,
     deployerPrivateKey: env.DEPLOYER_PRIVATE_KEY ?? null,
     railgunMnemonic: env.RELAYER_RAILGUN_MNEMONIC ?? null,
@@ -106,7 +135,7 @@ export function buildConfig(env: NodeJS.ProcessEnv, deploymentsRoot: string): Ac
     railgunDbPath: env.RAILGUN_DB_PATH ?? "./state/railgun-db",
     feeTtlSeconds: num(env, "FEE_TTL_SECONDS", 300, 1),
     feeVarianceBufferBps: num(env, "FEE_VARIANCE_BUFFER_BPS", 2000, 0),
-    profitMarginBps: num(env, "FEE_PROFIT_MARGIN_BPS", 1000, 0),
+    profitMarginBps: num(env, "FEE_PROFIT_MARGIN_BPS", 0, 0), // v1 default: 0
     ethUsdPriceStatic,
     ethUsdFeedAddress,
     ethUsdMaxStalenessMs: num(env, "ETH_USD_MAX_STALENESS_MS", 5_400_000, 60_000),
@@ -118,12 +147,27 @@ export function buildConfig(env: NodeJS.ProcessEnv, deploymentsRoot: string): Ac
       topology.network === "local" ? 2000 : 5000,
       100,
     ),
-    stuckTxThresholdMs: num(env, "STUCK_TX_THRESHOLD_MS", 600_000, 60_000),
-    maxAttestationAgeMs: num(env, "MAX_ATTESTATION_AGE_MS", 3_600_000, 60_000),
+    stuckTxThresholdMs: num(
+      env,
+      ["RELAYER_STUCK_TX_THRESHOLD_MS", "STUCK_TX_THRESHOLD_MS"],
+      600_000,
+      60_000,
+    ),
+    maxAttestationAgeMs: num(
+      env,
+      ["RELAYER_ATTESTATION_AGE_MS", "MAX_ATTESTATION_AGE_MS"],
+      3_600_000,
+      60_000,
+    ),
     fallbackActivateAfterMs: num(env, "FALLBACK_ACTIVATE_AFTER_MS", 120_000, 1000),
     fallbackChunkSize: num(env, "FALLBACK_CHUNK_SIZE", 2000, 10),
-    relayRatePerMin: num(env, "RELAY_RATE_PER_MIN", 10, 1),
-    getRatePerMin: num(env, "GET_RATE_PER_MIN", 60, 1),
+    relayRatePerMin: num(
+      env,
+      ["RELAYER_RATE_LIMIT_RELAY_PER_MIN", "RELAY_RATE_PER_MIN"],
+      10,
+      1,
+    ),
+    getRatePerMin: num(env, ["RELAYER_RATE_LIMIT_GET_PER_MIN", "GET_RATE_PER_MIN"], 60, 1),
     indexedSchema: env.INDEXED_SCHEMA ?? "indexed",
   };
 }

@@ -31,18 +31,26 @@ export const GAS_ESTIMATES: Record<keyof FeeSchedule["fees"], number> = {
 
 export const FEE_FLOOR_USDC_RAW = 10_000n; // 0.01 USDC (§6.1)
 export const ONE_GWEI = 1_000_000_000n;
+const USDC_UNIT = 1_000_000n;
+const PRICE_SCALE = 1_000_000n; // supports decimal Chainlink prices in v1's integer math
 
-/** fee = gasEstimate × gasPrice × (ethUsd / 1e18) × (1 + marginBps/10000) × 1e6, floored (§6.1). */
+/**
+ * fee = gasEstimate × gasPrice × ethUsd × 1e6 / 1e18 × (1 + marginBps/10000), floored (§6.1).
+ * Integer arithmetic ported from v1 fee-calculator.ts calculateFeeForGas; the price is
+ * scaled by 1e6 so v2's decimal feed prices (§8.8) keep v1's bigint precision.
+ */
 export function computeFeeUsdcRaw(
   gasEstimate: number,
   gasPriceWei: bigint,
   ethUsdPrice: number,
   profitMarginBps: number,
 ): bigint {
-  const wei = Number(gasEstimate) * Number(gasPriceWei);
-  const usdc = (wei * ethUsdPrice * (1 + profitMarginBps / 10_000) * 1e6) / 1e18;
-  const raw = BigInt(Math.floor(usdc));
-  return raw < FEE_FLOOR_USDC_RAW ? FEE_FLOOR_USDC_RAW : raw;
+  const gasCostWei = BigInt(gasEstimate) * gasPriceWei;
+  const priceScaled = BigInt(Math.round(ethUsdPrice * Number(PRICE_SCALE)));
+  const gasCostUsdc = (gasCostWei * priceScaled * USDC_UNIT) / (10n ** 18n * PRICE_SCALE);
+  const marginMultiplier = 10_000n + BigInt(profitMarginBps);
+  const feeWithMargin = (gasCostUsdc * marginMultiplier) / 10_000n;
+  return feeWithMargin > FEE_FLOOR_USDC_RAW ? feeWithMargin : FEE_FLOOR_USDC_RAW;
 }
 
 export interface GasPriceReader {
@@ -115,17 +123,19 @@ export class FeeCalculator {
 
   /**
    * Resolves a client-supplied feesCacheId to the current or one-deep previous schedule.
-   * The previous schedule stays acceptable for feeTtlSeconds × bufferBps / 10000 ms past
-   * its expiry (§6.1). cacheId embeds the chainId, so quotes cannot replay cross-chain.
+   * v1 getScheduleByCacheId semantics: BOTH schedules stay acceptable until
+   * expiresAt + feeTtlSeconds × bufferBps / 10000 ms. cacheId embeds the chainId, so
+   * quotes cannot replay cross-chain.
    */
   resolve(chainId: number, cacheId: string): FeeSchedule | null {
     const slot = this.byChain.get(chainId);
     if (!slot) return null;
-    const now = this.now();
-    if (slot.current?.cacheId === cacheId && now < slot.current.expiresAt) return slot.current;
     const bufferMs = (this.opts.feeTtlSeconds * 1000 * this.opts.feeVarianceBufferBps) / 10_000;
-    if (slot.previous?.cacheId === cacheId && now < slot.previous.expiresAt + bufferMs) {
-      return slot.previous;
+    const now = this.now();
+    for (const schedule of [slot.current, slot.previous]) {
+      if (schedule && schedule.cacheId === cacheId && now < schedule.expiresAt + bufferMs) {
+        return schedule;
+      }
     }
     return null;
   }

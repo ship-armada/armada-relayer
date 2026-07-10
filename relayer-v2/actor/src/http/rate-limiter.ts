@@ -70,6 +70,7 @@ export function rateLimitMiddleware(
       return;
     }
     onLimited?.(endpoint);
-    res.status(429).json({ error: { code: "RATE_LIMITED", message: "rate limit exceeded" } });
+    // v1 body shape (http-api.ts:92): flat { error, code }.
+    res.status(429).json({ error: "Too many requests — slow down.", code: "RATE_LIMITED" });
   };
 }

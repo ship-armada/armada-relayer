@@ -32,7 +32,7 @@ export default createConfig({
       chain: {
         [hub.name]: {
           address: hub.manifest.contracts.privacyPool as `0x${string}`,
-          startBlock: hub.manifest.deployBlock,
+          startBlock: hub.manifest.deployBlock ?? 0,
         },
       },
     },
@@ -43,7 +43,7 @@ export default createConfig({
           c.name,
           {
             address: c.manifest.contracts.privacyPoolClient as `0x${string}`,
-            startBlock: c.manifest.deployBlock,
+            startBlock: c.manifest.deployBlock ?? 0,
           },
         ]),
       ),
@@ -54,8 +54,8 @@ export default createConfig({
         resolved.map((c) => [
           c.name,
           {
-            address: c.manifest.contracts.messageTransmitter as `0x${string}`,
-            startBlock: c.manifest.deployBlock,
+            address: c.manifest.cctp.messageTransmitter as `0x${string}`,
+            startBlock: c.manifest.deployBlock ?? 0,
           },
         ]),
       ),

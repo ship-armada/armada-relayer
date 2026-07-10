@@ -1,22 +1,61 @@
-// ABOUTME: HTTP API contract tests (§9.1) via supertest: endpoint shapes, idempotency replay,
-// ABOUTME: delivered cursor feed, health 200/503, rate limiting, body-size limit, no /cctp-status.
-import { describe, it, expect, beforeEach } from "vitest";
+// ABOUTME: HTTP API contract tests (v1 parity shapes from http-api.ts): flat {error, code}
+// ABOUTME: bodies, endpoint shapes, idempotency replay, delivered feed, health 200/503, limits.
+import { describe, it, expect } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
+import { Interface, parseUnits } from "ethers";
 import { createApp, type HttpDeps, type TxStatusResult } from "../src/http/server.js";
 import { FeeCalculator } from "../src/relay/fee-calculator.js";
 import { PrivacyRelay } from "../src/relay/privacy-relay.js";
 import { DedupCache } from "../src/relay/dedup-cache.js";
 import { InMemoryIdempotencyRepo } from "../src/db/idempotency-repo.js";
 import { InMemoryJobsRepo } from "../src/db/jobs-repo.js";
-import { newCounters } from "../src/http/health.js";
+import { Counters, type ChainHealthReport } from "../src/http/health.js";
 import { createMetrics } from "../src/metrics.js";
-import { SELECTOR_TRANSACT } from "../src/relay/selectors.js";
+import { TRANSACT_ABI } from "../src/relay/transact-shape.js";
 import { mkJob, POOL_ADDRESS } from "./helpers.js";
-import type { ChainHealthReport } from "../src/http/health.js";
 
 const GWEI = 1_000_000_000n;
 const WRAPPER = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
+const USDC = "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9";
+
+// Minimal valid transact calldata (fee note is faked in the extractor).
+const TX_STRUCT = {
+  proof: { a: { x: 1n, y: 2n }, b: { x: [1n, 2n], y: [3n, 4n] }, c: { x: 5n, y: 6n } },
+  merkleRoot: "0x" + "aa".repeat(32),
+  nullifiers: ["0x" + "bb".repeat(32)],
+  commitments: ["0x" + "cc".repeat(32)],
+  boundParams: {
+    treeNumber: 0,
+    minGasPrice: 0n,
+    unshield: 0,
+    chainID: 31337n,
+    adaptContract: "0x" + "00".repeat(20),
+    adaptParams: "0x" + "00".repeat(32),
+    commitmentCiphertext: [],
+  },
+  unshieldPreimage: {
+    npk: "0x" + "07".repeat(32),
+    token: { tokenType: 0, tokenAddress: USDC, tokenSubID: 0n },
+    value: 100n,
+  },
+};
+const TRANSACT_DATA = new Interface([...TRANSACT_ABI]).encodeFunctionData("transact", [[TX_STRUCT]]);
+
+function healthyChain(): ChainHealthReport {
+  return {
+    chainName: "hub",
+    domain: 100,
+    status: "healthy",
+    lastProcessedBlock: 100,
+    chainHead: 100,
+    lagBlocks: 0,
+    lastScanAt: 1_750_000_000_000,
+    lastError: null,
+    pendingCount: 0,
+    deadLetterCount: 0,
+  };
+}
 
 interface Harness {
   app: Express;
@@ -25,6 +64,7 @@ interface Harness {
   calc: FeeCalculator;
   chainReports: ChainHealthReport[];
   txStatusResult: { value: TxStatusResult };
+  counters: Counters;
 }
 
 function makeApp(overrides: Partial<HttpDeps> = {}): Harness {
@@ -42,23 +82,24 @@ function makeApp(overrides: Partial<HttpDeps> = {}): Harness {
   );
   const jobs = new InMemoryJobsRepo();
   const idempotency = new InMemoryIdempotencyRepo();
-  const chainReports: ChainHealthReport[] = [
-    { chainId: 31337, status: "healthy", lastScanAt: null, lagBlocks: 0, lastIndexedBlock: "1" },
-  ];
+  const counters = new Counters();
+  const chainReports: ChainHealthReport[] = [healthyChain()];
   const txStatusResult = { value: { status: "pending" } as TxStatusResult };
   const relay = new PrivacyRelay({
-    targets: new Map([
-      [
-        31337,
-        {
-          chainId: 31337,
-          allowlist: new Set([POOL_ADDRESS.toLowerCase(), WRAPPER.toLowerCase()]),
-          wrapperAddress: WRAPPER,
-        },
-      ],
+    allowedTargets: new Map([
+      [31337, new Set([POOL_ADDRESS.toLowerCase(), WRAPPER.toLowerCase()])],
     ]),
     feeCalculator: calc,
-    extractor: { extractFeeNoteUsdcAmount: async () => 10n ** 12n },
+    gaslessCtx: { wrappersByChain: new Map([[31337, WRAPPER]]) },
+    broadcasterCtx: {
+      extractor: {
+        extractFirstNoteERC20AmountMap: async () => ({
+          [USDC.toLowerCase()]: parseUnits("1000", 6),
+        }),
+      },
+      privacyPoolAddress: POOL_ADDRESS,
+      usdcAddress: USDC,
+    },
     submitter: {
       tryAcquire: () => true,
       release: () => {},
@@ -76,7 +117,7 @@ function makeApp(overrides: Partial<HttpDeps> = {}): Harness {
     jobs,
     txStatus: async () => txStatusResult.value,
     chainHealth: async () => chainReports,
-    counters: newCounters(),
+    counters,
     metrics: createMetrics(),
     trustProxy: false,
     bodyLimitBytes: 256 * 1024,
@@ -84,7 +125,7 @@ function makeApp(overrides: Partial<HttpDeps> = {}): Harness {
     getRatePerMin: 60,
     ...overrides,
   });
-  return { app, jobs, idempotency, calc, chainReports, txStatusResult };
+  return { app, jobs, idempotency, calc, chainReports, txStatusResult, counters };
 }
 
 async function freshCacheId(h: Harness): Promise<string> {
@@ -92,21 +133,31 @@ async function freshCacheId(h: Harness): Promise<string> {
 }
 
 describe("GET / and /fees", () => {
-  it("serves the banner with the endpoint list", async () => {
+  it("serves the v1-style banner", async () => {
     const res = await request(makeApp().app).get("/");
     expect(res.status).toBe(200);
-    expect(res.body.service).toBe("armada-actor");
-    expect(res.body.endpoints).toContain("/cctp/delivered");
+    expect(res.body.status).toBe("running");
+    expect(res.body.endpoints).toContain("POST /relay");
+    expect(res.body.endpoints).toContain("GET /cctp/delivered");
+    expect(res.body.endpoints).not.toContain("GET /cctp-status/:messageHash"); // §16.1
   });
 
-  it("/fees defaults to the hub chain and 404s unknown chains", async () => {
+  it("/fees defaults to the hub chain; unknown chain → 404 {error, supported}", async () => {
     const h = makeApp();
     const res = await request(h.app).get("/fees");
     expect(res.status).toBe(200);
     expect(res.body.chainId).toBe(31337);
     expect(res.body.cacheId).toMatch(/^fee-31337-/);
     expect(res.body.broadcasterRailgunAddress).toBe("0zk1test");
-    expect((await request(h.app).get("/fees?chainId=999")).status).toBe(404);
+    for (const v of Object.values(res.body.fees as Record<string, string>)) {
+      expect(v).toMatch(/^\d+$/);
+    }
+    const missing = await request(h.app).get("/fees?chainId=999");
+    expect(missing.status).toBe(404);
+    expect(missing.body).toEqual({
+      error: "No fee schedule for chain 999",
+      supported: [31337, 31338, 31339],
+    });
   });
 });
 
@@ -116,28 +167,33 @@ describe("POST /relay", () => {
     const res = await request(h.app).post("/relay").send({
       chainId: 31337,
       to: POOL_ADDRESS,
-      data: SELECTOR_TRANSACT + "ab".repeat(64),
+      data: TRANSACT_DATA,
       feesCacheId: await freshCacheId(h),
     });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ txHash: "0x" + "cc".repeat(32), status: "pending" });
+    expect(h.counters.snapshot()["submitSuccess.transact"]).toBe(1);
   });
 
-  it("maps error codes to the preserved HTTP statuses", async () => {
+  it("missing fields → 400 with the v1 message", async () => {
+    const res = await request(makeApp().app).post("/relay").send({ chainId: 31337 });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: "Missing required fields: chainId, to, data, feesCacheId",
+    });
+  });
+
+  it("maps error codes to statuses with FLAT {error, code} bodies (v1 shape)", async () => {
     const h = makeApp();
     const cacheId = await freshCacheId(h);
     const cases: [object, number, string][] = [
-      [{ chainId: 999, to: POOL_ADDRESS, data: "0x", feesCacheId: cacheId }, 400, "INVALID_CHAIN"],
+      [{ chainId: 999, to: POOL_ADDRESS, data: "0x00", feesCacheId: cacheId }, 400, "INVALID_CHAIN"],
       [
-        { chainId: 31337, to: "0x" + "99".repeat(20), data: "0x", feesCacheId: cacheId },
+        { chainId: 31337, to: "0x" + "99".repeat(20), data: "0x00", feesCacheId: cacheId },
         400,
         "INVALID_TARGET",
       ],
-      [
-        { chainId: 31337, to: POOL_ADDRESS, data: "0x", feesCacheId: "stale" },
-        402,
-        "FEE_EXPIRED",
-      ],
+      [{ chainId: 31337, to: POOL_ADDRESS, data: "0x00", feesCacheId: "stale" }, 402, "FEE_EXPIRED"],
       [
         { chainId: 31337, to: POOL_ADDRESS, data: "0xdeadbeef00", feesCacheId: cacheId },
         400,
@@ -147,8 +203,11 @@ describe("POST /relay", () => {
     for (const [body, status, code] of cases) {
       const res = await request(h.app).post("/relay").send(body);
       expect(res.status).toBe(status);
-      expect(res.body.error.code).toBe(code);
+      expect(res.body.code).toBe(code);
+      expect(typeof res.body.error).toBe("string"); // flat, not nested
     }
+    const snapshot = h.counters.snapshot();
+    expect(snapshot["feeVerifierRejects.FEE_EXPIRED"]).toBe(1);
   });
 
   it("idempotencyKey: first call executes, repeat returns the recorded result", async () => {
@@ -156,47 +215,46 @@ describe("POST /relay", () => {
     const body = {
       chainId: 31337,
       to: POOL_ADDRESS,
-      data: SELECTOR_TRANSACT + "ab".repeat(64),
+      data: TRANSACT_DATA,
       feesCacheId: await freshCacheId(h),
       idempotencyKey: "client-key-1",
     };
     const first = await request(h.app).post("/relay").send(body);
     expect(first.status).toBe(200);
-    // repeat (would otherwise be DUPLICATE_TX) returns the recorded result
     const second = await request(h.app).post("/relay").send(body);
     expect(second.status).toBe(200);
     expect(second.body.txHash).toBe(first.body.txHash);
+    expect(h.counters.snapshot()["idempotentReplay"]).toBe(1);
   });
 
-  it("rejects idempotency keys longer than 200 chars", async () => {
-    const h = makeApp();
-    const res = await request(h.app).post("/relay").send({
+  it("invalid idempotencyKey → 400 {error, code} (v1 message)", async () => {
+    const res = await request(makeApp().app).post("/relay").send({
       chainId: 31337,
       to: POOL_ADDRESS,
-      data: "0x",
+      data: "0x00",
       feesCacheId: "x",
       idempotencyKey: "k".repeat(201),
     });
     expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "Invalid idempotencyKey", code: "INVALID_DATA" });
   });
 
   it("enforces the 256 KiB body limit (S2)", async () => {
-    const h = makeApp();
-    const res = await request(h.app)
+    const res = await request(makeApp().app)
       .post("/relay")
       .set("content-type", "application/json")
       .send(JSON.stringify({ data: "00".repeat(300 * 1024) }));
     expect(res.status).toBe(413);
   });
 
-  it("rate limits POST /relay per IP at the configured rate", async () => {
+  it("rate limits POST /relay with the v1 429 body", async () => {
     const h = makeApp({ relayRatePerMin: 2 });
     const body = { chainId: 999, to: "0x", data: "0x", feesCacheId: "x" };
     await request(h.app).post("/relay").send(body);
     await request(h.app).post("/relay").send(body);
     const res = await request(h.app).post("/relay").send(body);
     expect(res.status).toBe(429);
-    expect(res.body.error.code).toBe("RATE_LIMITED");
+    expect(res.body).toEqual({ error: "Too many requests — slow down.", code: "RATE_LIMITED" });
   });
 });
 
@@ -217,20 +275,18 @@ describe("GET /status/:txHash", () => {
     expect((await h.idempotency.get("k1"))!.status).toBe("confirmed");
   });
 
-  it("rejects malformed hashes and unknown chains", async () => {
+  it("v1 validation bodies: bad hash and bad chainId", async () => {
     const h = makeApp();
-    expect((await request(h.app).get("/status/nothex")).status).toBe(400);
-    expect(
-      (await request(h.app).get(`/status/${"0x" + "cc".repeat(32)}?chainId=5`)).status,
-    ).toBe(404);
+    const bad = await request(h.app).get("/status/nothex");
+    expect(bad.status).toBe(400);
+    expect(bad.body).toEqual({ error: "Invalid transaction hash" });
+    const badChain = await request(h.app).get(`/status/${"0x" + "cc".repeat(32)}?chainId=5`);
+    expect(badChain.status).toBe(400);
+    expect(badChain.body).toEqual({ error: "Invalid chainId: 5" });
   });
 });
 
 describe("GET /cctp/delivered (§9.1, P2)", () => {
-  beforeEach(() => {
-    // no shared state between tests — each makeApp() builds fresh repos
-  });
-
   it("serves delivered records for a destination domain since a cursor", async () => {
     const h = makeApp();
     await h.jobs.insertIfAbsent(
@@ -254,7 +310,7 @@ describe("GET /cctp/delivered (§9.1, P2)", () => {
       destinationBlock: "88",
       deliveredAt: 1_750_000_000_000,
     });
-    expect(res.body.generatedAt).toBeTruthy();
+    expect(typeof res.body.generatedAt).toBe("number");
 
     const empty = await request(h.app).get(
       `/cctp/delivered?destinationDomain=100&sinceMs=${1_750_000_000_000}`,
@@ -263,38 +319,53 @@ describe("GET /cctp/delivered (§9.1, P2)", () => {
   });
 
   it("requires destinationDomain", async () => {
-    const res = await request(makeApp().app).get("/cctp/delivered");
-    expect(res.status).toBe(400);
+    expect((await request(makeApp().app).get("/cctp/delivered")).status).toBe(400);
   });
 
   it("v1's per-message /cctp-status/:messageHash MUST NOT exist (§16.1)", async () => {
-    const res = await request(makeApp().app).get("/cctp-status/0xabc");
-    expect(res.status).toBe(404);
+    expect((await request(makeApp().app).get("/cctp-status/0xabc")).status).toBe(404);
   });
 });
 
-describe("GET /health (§6.6 semantics)", () => {
-  it("200 healthy with pending/deadLetter counts and counters", async () => {
+describe("GET /health (v1 RelayerHealth shape)", () => {
+  it("200 healthy with v1 chain rows, numeric generatedAt, dotted counters", async () => {
     const h = makeApp();
-    await h.jobs.insertIfAbsent(mkJob({ dedupKey: "a:0", state: "submitted" }));
-    await h.jobs.insertIfAbsent(mkJob({ dedupKey: "b:0", state: "dead_letter" }));
+    h.counters.inc("submitSuccess.transact");
     const res = await request(h.app).get("/health");
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("healthy");
-    expect(res.body.pendingCount).toBe(1);
-    expect(res.body.deadLetterCount).toBe(1);
-    expect(res.body.counters).toHaveProperty("submitSuccess");
-    expect(res.body.chains).toHaveLength(1);
+    expect(res.body.chains[0]).toMatchObject({
+      chainName: "hub",
+      domain: 100,
+      status: "healthy",
+      lastProcessedBlock: 100,
+      chainHead: 100,
+      lagBlocks: 0,
+      lastError: null,
+      pendingCount: 0,
+      deadLetterCount: 0,
+    });
+    expect(typeof res.body.generatedAt).toBe("number");
+    expect(res.body.counters).toEqual({ "submitSuccess.transact": 1 });
   });
 
-  it("503 only when rollup is stale or unhealthy", async () => {
+  it("v1 status codes: 200 healthy/degraded, 503 stale/unhealthy — same body", async () => {
     const h = makeApp();
     h.chainReports[0]!.status = "degraded";
     expect((await request(h.app).get("/health")).status).toBe(200);
     h.chainReports[0]!.status = "stale";
-    expect((await request(h.app).get("/health")).status).toBe(503);
+    const res = await request(h.app).get("/health");
+    expect(res.status).toBe(503);
+    expect(res.body.status).toBe("stale"); // body still present on 503
     h.chainReports[0]!.status = "unhealthy";
     expect((await request(h.app).get("/health")).status).toBe(503);
+  });
+
+  it("is not rate-limited (v1)", async () => {
+    const h = makeApp({ getRatePerMin: 1 });
+    for (let i = 0; i < 5; i++) {
+      expect((await request(h.app).get("/health")).status).toBe(200);
+    }
   });
 });
 
