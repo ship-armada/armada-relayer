@@ -6,7 +6,12 @@ import initPoseidon, { poseidon } from "@railgun-community/poseidon-hash-wasm";
 
 let ready = false;
 
-/** Initialize the WASM once. Call at watcher startup; throws if the module cannot load. */
+/**
+ * Initialize the WASM once (idempotent). Called lazily on the first quick-sync request rather
+ * than at boot on purpose: a broken WASM then fails loudly on that request only, instead of
+ * coupling the whole read API's startup to a dependency that just the quick-sync path uses.
+ * Throws if the module cannot load (no silent JS fallback — S6 exception condition).
+ */
 export async function initPoseidonWasm(): Promise<void> {
   if (ready) return;
   await initPoseidon();

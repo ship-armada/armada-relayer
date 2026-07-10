@@ -24,7 +24,17 @@ import {
 import { initPoseidonWasm } from "../lib/poseidon";
 
 // Max block window served per quick-sync page (whole blocks; caller paginates by servedThroughBlock).
-const QUICK_SYNC_MAX_BLOCK_WINDOW = Number(process.env.QUICK_SYNC_MAX_BLOCK_WINDOW ?? 100_000);
+// Validated at startup: a non-positive/NaN value would make windowEnd < startingBlock, breaking
+// the documented resume rule (servedThroughBlock + 1) into an infinite loop — fail loud instead.
+const QUICK_SYNC_MAX_BLOCK_WINDOW = ((): number => {
+  const raw = process.env.QUICK_SYNC_MAX_BLOCK_WINDOW;
+  if (raw === undefined) return 100_000;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`QUICK_SYNC_MAX_BLOCK_WINDOW must be a positive integer, got ${JSON.stringify(raw)}`);
+  }
+  return n;
+})();
 
 const deploymentsRoot =
   process.env.DEPLOYMENTS_DIR ?? join(process.cwd(), "..", "..", "deployments");
@@ -127,11 +137,10 @@ app.get("/v1/nullifiers", async (c) => {
   });
 });
 
-// Quick-sync (§7.3, fast-follow): serves the Railgun engine's AccumulatedEvents for the hub,
-// decoded server-side from stored raw logs so a frontend engine hydrates its merkletree from one
-// call instead of scanning from block 0. Railgun events live only on the hub. P1/P4 compliant.
-// NOTE: nullifiers + unshields decoded (phase 2); commitmentEvents land in phases 3–4
-// (transact + poseidon shield hash) — see .context/PLAN_QUICK_SYNC.md.
+// Quick-sync (§7.3): serves the Railgun engine's AccumulatedEvents for the hub, decoded
+// server-side from stored raw logs so a frontend engine hydrates its merkletree from one call
+// instead of scanning from block 0. Railgun events live only on the hub. P1/P4 compliant.
+// See .context/PLAN_QUICK_SYNC.md.
 const HUB_POOL_ADDRESS = hub.manifest.contracts.privacyPool!.toLowerCase();
 
 app.get("/v1/quick-sync/:chainId", async (c) => {
@@ -189,6 +198,10 @@ app.get("/v1/quick-sync/:chainId", async (c) => {
     unshieldEvents: decodeUnshields(rows),
   };
   c.header("cache-control", cacheControlFor(windowEnd, through, hub.confirmations));
+  // JSON.stringify drops the `undefined`-valued keys (fee/timestamp/railgunTxid/from/poisPerList)
+  // from the wire format. That is runtime-equivalent for the consuming engine (an absent key reads
+  // as undefined), so do NOT "fix" this to wire-emit the keys — the required-key-with-undefined
+  // types (quick-sync.ts) exist for the compile-time engine pin, not the serialized shape.
   return c.json({
     ...result,
     servedThroughBlock: Number(windowEnd), // caller resumes at windowEnd + 1 while < indexedThrough

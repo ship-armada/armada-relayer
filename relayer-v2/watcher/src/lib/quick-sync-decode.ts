@@ -160,6 +160,15 @@ function shieldEventOf(
   const txid = formatUint256(row.txHash);
   const commitments: QuickSyncShieldCommitment[] = args.commitments.map((pre, i) => {
     const tokenType = Number(pre.token.tokenType);
+    // The engine's getTokenDataHash switches on tokenType: ERC20 hashes the address directly,
+    // but ERC721/ERC1155 hash keccak256(type‖address‖subID) % SNARK_PRIME — a different value.
+    // The Armada pools are ERC20-only; refuse rather than emit a silently-wrong hash for any
+    // future NFT shield (fail the request loudly, not the merkletree data).
+    if (tokenType !== 0) {
+      throw new Error(
+        `quick-sync: unsupported shield tokenType ${tokenType} (only ERC20 tokenHash is implemented)`,
+      );
+    }
     // ERC20 tokenHash = address left-padded to 32 bytes; as a field element that is BigInt(addr).
     const tokenHash = bi(pre.token.tokenAddress);
     const noteHash = poseidonHash([bi(pre.npk), tokenHash, pre.value]);

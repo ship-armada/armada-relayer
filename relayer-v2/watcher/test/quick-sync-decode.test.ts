@@ -7,6 +7,7 @@ import {
   decodeNullifiers,
   decodeUnshields,
   decodeTransactCommitments,
+  decodeShieldCommitments,
   formatUint256,
   type RawLogRow,
 } from "../src/lib/quick-sync-decode";
@@ -144,5 +145,22 @@ describe("decodeTransactCommitments", () => {
   it("ignores non-Transact logs", () => {
     const rows = [row("Nullified", { treeNumber: 0, nullifier: [b32("aa")] })];
     expect(decodeTransactCommitments(rows)).toEqual([]);
+  });
+});
+
+describe("decodeShieldCommitments token-type guard", () => {
+  const b32s = (n: string) => "0x" + n.repeat(32);
+  it("throws on a non-ERC20 shield rather than emitting a silently-wrong hash", () => {
+    // tokenType 1 (ERC721) hashes differently in the engine; we only implement ERC20.
+    const rows = [
+      row("Shield", {
+        treeNumber: 0,
+        startPosition: 0,
+        commitments: [{ npk: b32s("07"), token: { tokenType: 1, tokenAddress: "0x" + "22".repeat(20), tokenSubID: 5n }, value: 1n }],
+        shieldCiphertext: [{ encryptedBundle: [b32s("01"), b32s("02"), b32s("03")], shieldKey: b32s("04") }],
+        fees: [0n],
+      }),
+    ];
+    expect(() => decodeShieldCommitments(rows)).toThrow(/unsupported shield tokenType 1/);
   });
 });
