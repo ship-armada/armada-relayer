@@ -140,6 +140,7 @@ async function main(): Promise<void> {
     dedup,
     onOutcome: (selector, outcome, code) => metrics.relaySubmission(selector, outcome, code),
     onFeeReject: (code) => metrics.feeVerifierReject(code),
+    counters,
   });
 
   // --- CCTP job pipeline (§8.3–§8.7) ---

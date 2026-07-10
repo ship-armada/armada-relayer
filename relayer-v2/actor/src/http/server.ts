@@ -9,7 +9,6 @@ import { RelayError } from "./errors.js";
 import { TokenBucketLimiter, rateLimitMiddleware } from "./rate-limiter.js";
 import type { ChainHealthReport } from "./health.js";
 import { Counters, healthHttpStatus, rollup } from "./health.js";
-import { SELECTOR_NAMES, selectorOf } from "../relay/selectors.js";
 import type { ActorMetrics } from "../metrics.js";
 import { logger } from "../logger.js";
 
@@ -133,8 +132,6 @@ export function createApp(deps: HttpDeps): Express {
       return;
     }
 
-    const selectorName = SELECTOR_NAMES.get(selectorOf(body.data) ?? "") ?? "unknown";
-
     if (body.idempotencyKey) {
       const existing = await deps.idempotency.get(body.idempotencyKey);
       if (existing) {
@@ -147,7 +144,6 @@ export function createApp(deps: HttpDeps): Express {
 
     try {
       const result = await deps.relay.relay(body as RelayRequest);
-      deps.counters.inc(`submitSuccess.${selectorName}`);
       if (body.idempotencyKey) {
         await deps.idempotency.put({
           key: body.idempotencyKey,
@@ -161,14 +157,10 @@ export function createApp(deps: HttpDeps): Express {
       res.json(result);
     } catch (err) {
       if (err instanceof RelayError) {
-        deps.counters.inc(`submitFail.${selectorName}.${err.code}`);
-        if (["FEE_INSUFFICIENT", "FEE_EXPIRED", "FEE_TOO_LOW"].includes(err.code)) {
-          deps.counters.inc(`feeVerifierRejects.${err.code}`);
-        }
-        // v1 error body shape: flat { error: <message>, code: <CODE> }
+        // v1 error body shape: flat { error: <message>, code: <CODE> }. Counters are
+        // incremented inside PrivacyRelay at v1's exact sites (verifier + submit steps).
         res.status(err.status).json({ error: err.message, code: err.code });
       } else {
-        deps.counters.inc(`submitFail.${selectorName}.UNKNOWN_ERROR`);
         logger.error({ err: (err as Error).message }, "unexpected /relay failure");
         res.status(500).json({ error: "Internal relay error", code: "UNKNOWN_ERROR" });
       }
