@@ -472,6 +472,15 @@ Structured JSON logs (pino or console-JSON; implementer's choice). MUST NOT log:
 
 ## 14. Migration & Cutover
 
+> **Testnet simplification (2026-07-10 ruling; see §19.8).** The staged M1–M4 migration below
+> is normative ONLY for a future **mainnet** cutover. For the current **testnet** deployment
+> there are no users and no value at risk, so cutover is a single step: deploy the full v2 stack
+> (postgres + watcher + actor), switch off v1, point the frontend at the watcher. No
+> watcher-first soak, no clean-operation window, and **no cutover import script** — relays
+> lost/duplicated/state dropped in the switchover are acceptable (the destination contract's
+> replay protection covers duplicates; §16.1/D4). The M3 import step is explicitly WON'T-DO on
+> testnet.
+
 Transition states are allowed to violate D1 (both v1 scanner and watcher polling) for a bounded period.
 
 1. **M1 — Watcher ships first.** Deploy postgres + watcher alongside v1. Watcher backfills from manifest `deployBlock`s. v1 continues relaying untouched. Verify: differential test (§15.3) green against Sepolia; watcher `/health` healthy for 48 h.
@@ -621,6 +630,17 @@ where this document's original text disagreed with preserved v1 behavior:
    fee-quote variance buffer applies to current AND previous schedules; `profitMarginBps`
    defaults to 0 (§6.1); `relayWithHook` falls back to `receiveMessage` when no HookRouter
    is configured (§8.4).
+
+Later amendments:
+
+8. **Testnet cutover simplification (§14).** The staged M1–M4 migration is normative only for a
+   future mainnet cutover. Testnet cutover is a single step — deploy the full v2 stack, switch
+   off v1, repoint the frontend — with no soak window and **no cutover import script**; lost or
+   duplicated relays in the switchover are acceptable (replay protection covers duplicates). The
+   deployment-manifest source also moved to the central registry (ship-armada/armada-deployments,
+   a pinned submodule) selected by `DEPLOYMENT_INSTANCE`; the flat in-repo manifests are retired
+   (local/e2e keeps a flat fallback). Config posture (§7.2) and the mainnet loud-fail are
+   unchanged.
 
 Also recorded in §1: the standalone-repository ruling. Implementation cross-reference:
 `.context/deviations.md` (reconciliation log with monorepo file:line evidence).
