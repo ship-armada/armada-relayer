@@ -214,11 +214,7 @@ async function main(): Promise<void> {
       await discoverWork(discovery);
       await machine.tick();
       await scanner.tick();
-      const counts = await jobs.countsByState();
-      for (const [key, n] of counts) {
-        const [state, domain] = key.split(":");
-        metrics.setCctpJobs(state!, Number(domain), n);
-      }
+      metrics.setCctpJobsSnapshot(await jobs.countsByState());
     } catch (err) {
       logger.error({ err: (err as Error).message }, "job tick failed");
     } finally {

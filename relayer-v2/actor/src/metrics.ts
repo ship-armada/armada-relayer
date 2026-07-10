@@ -8,7 +8,9 @@ export interface ActorMetrics {
   feeVerifierReject(code: string): void;
   rateLimited(endpoint: string): void;
   idempotentReplay(): void;
-  setCctpJobs(state: string, destinationDomain: number, count: number): void;
+  /** Replaces the whole gauge from a state-count snapshot; absent (state, domain)
+   * pairs reset to zero so emptied states don't hold their last value. */
+  setCctpJobsSnapshot(counts: Map<string, number>): void; // key `${state}:${domain}`
   jobTransition(from: string, to: string): void;
   irisPoll(result: "complete" | "pending" | "error"): void;
   rpcRequest(chain: number, method: string): void;
@@ -106,7 +108,13 @@ export function createMetrics(registry?: client.Registry): ActorMetrics {
     feeVerifierReject: (code) => feeVerifierRejects.labels(code).inc(),
     rateLimited: (endpoint) => rateLimited.labels(endpoint).inc(),
     idempotentReplay: () => idempotentReplays.inc(),
-    setCctpJobs: (state, domain, count) => cctpJobs.labels(state, String(domain)).set(count),
+    setCctpJobsSnapshot: (counts) => {
+      cctpJobs.reset();
+      for (const [key, count] of counts) {
+        const [state, domain] = key.split(":");
+        cctpJobs.labels(state!, domain!).set(count);
+      }
+    },
     jobTransition: (from, to) => jobTransitions.labels(from, to).inc(),
     irisPoll: (result) => irisPolls.labels(result).inc(),
     rpcRequest: (chain, method) => rpcRequests.labels(String(chain), method).inc(),
