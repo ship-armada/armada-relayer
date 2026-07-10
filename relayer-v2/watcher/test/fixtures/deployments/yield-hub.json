@@ -1,0 +1,7 @@
+{
+  "chainId": 31337,
+  "contracts": {
+    "armadaYieldVault": "0x214a3c251E9b064f4420a26Cc879b362A26bAc5A",
+    "armadaYieldAdapter": "0x148A6A4588062dB433Fa8847017DB42bAc506458"
+  }
+}

@@ -1,0 +1,48 @@
+# ABOUTME: Prometheus alert rules per spec §10.3: watcher lag, fallback scanner, dead letters,
+# ABOUTME: wallet balance, actor getLogs budget guardrail, degraded ETH/USD price.
+groups:
+  - name: armada-relayer-v2
+    rules:
+      - alert: WatcherIndexingStale
+        # Watcher lag > 10× poll interval, proxied by ponder's realtime latency metrics
+        # being absent/stalled: no indexed-block progress for 2m on any chain.
+        expr: rate(ponder_indexing_completed_events[5m]) == 0 and on() (time() - process_start_time_seconds{job="armada-watcher"}) > 300
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Watcher event indexing has stalled"
+
+      - alert: FallbackScannerActive
+        expr: armada_actor_fallback_scanner_active > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Actor fallback scanner active for > 10 min (watcher stale, §8.7)"
+
+      - alert: DeadLetterJobs
+        expr: increase(armada_actor_cctp_job_transitions_total{to="dead_letter"}[15m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "CCTP jobs are dead-lettering"
+
+      - alert: RelayerWalletLow
+        expr: armada_actor_wallet_balance_wei < 1e17
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Relayer EOA balance below 0.1 ETH"
+
+      - alert: ActorGetLogsWhileWatcherHealthy
+        # D1 budget guardrail: the actor must not issue eth_getLogs unless the fallback
+        # scanner is active.
+        expr: rate(armada_actor_rpc_requests_total{method="eth_getLogs"}[5m]) > 0 and on(chain) armada_actor_fallback_scanner_active == 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Actor issued eth_getLogs while the watcher is healthy (D1 violation)"
+
+      - alert: EthUsdPriceDegraded
+        expr: armada_actor_eth_usd_price_degraded == 1
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "ETH/USD price source degraded for > 15 min (§8.8)"

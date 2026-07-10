@@ -14,6 +14,8 @@ This document specifies **relayer v2**: a greenfield rewrite of the Armada relay
 
 Requirement keywords MUST / MUST NOT / SHOULD / MAY are used per RFC 2119.
 
+**Repository split (2026-07-09 ruling):** relayer v2 lives permanently in THIS standalone repository, not in the monorepo. Monorepo path references in this document (`relayer/`, `.claude/PLAN_EVENT_INDEXING.md`, `apps/armada-interface/`, Hardhat artifacts) refer to the monorepo, used as a read-only reference and local-chain test rig (cloned at `.context/armada-poc`). §4.2's layout applies to this repo with `relayer-v2/` at the root; M4's "move `relayer/` to `_legacy/`" happens in the monorepo. See §19 for the corrections applied under this section's v1-code-wins rule.
+
 ---
 
 ## 2. Background and Motivation
@@ -141,7 +143,9 @@ v1 (`relayer/`) MUST remain untouched and runnable until cutover completes (§14
 -- actor.cctp_jobs — one row per MessageSent the actor has claimed for relay
 CREATE TABLE actor.cctp_jobs (
   dedup_key         text PRIMARY KEY,          -- "${sourceTxHash}:${logIndex}"
-  message_hash      text NOT NULL,             -- keccak256(messageBytes); Iris lookup key
+  message_hash      text NOT NULL,             -- keccak256(messageBytes); frontend matching key.
+                                               -- NOT the Iris lookup key — Iris is queried by
+                                               -- sourceDomain + sourceTxHash (§8.4, v1 behavior)
   message_bytes     text NOT NULL,
   source_domain     int  NOT NULL,
   destination_domain int NOT NULL,
@@ -152,6 +156,10 @@ CREATE TABLE actor.cctp_jobs (
   detected_at       timestamptz NOT NULL,
   poll_attempts     int  NOT NULL DEFAULT 0,
   last_iris_status  text,
+  attestation       text,                      -- attestation bytes, persisted for restart-resume
+  relay_message     text,                      -- the Iris-returned MessageV2 bytes (nonce/finality
+                                               -- filled) — what actually gets broadcast (§8.4);
+                                               -- the attestation signs THESE bytes
   retry_attempts    int  NOT NULL DEFAULT 0,
   next_retry_at     timestamptz,
   submitted_tx_hash text,
@@ -192,7 +200,8 @@ v2 MUST preserve the following v1 semantics and constants exactly (source: v1 co
 - `cacheId` format `fee-{chainId}-{timestampMs}-{counter}`; includes chainId so a quote cannot be replayed cross-chain.
 - Fee formula: `gasEstimate × gasPrice × (ethUsdcPrice / 1e18) × (1 + profitMarginBps/10000) × 1e6`, floored at 10,000 raw units (0.01 USDC). Gas price from `provider.getFeeData()` (fallback `maxFeePerGas`, then 1 gwei). **Deviation (§16.6):** v2 sources `ethUsdcPrice` from a Chainlink feed on sepolia/mainnet (§8.8) instead of v1's static config value; the formula and every other constant are unchanged.
 - Gas estimates per operation: transfer/unshield/crossChainShield/crossChainUnshield 500,000; crossContract 2,000,000; gaslessShield 300,000; gaslessCrossChainShield 400,000.
-- Quote TTL `feeTtlSeconds` (default 300 s); one-deep previous-schedule retention with variance buffer `feeTtlSeconds × feeVarianceBufferBps / 10000` ms (default bps 2000).
+- Quote TTL `feeTtlSeconds` (default 300 s); one-deep previous-schedule retention. The variance buffer `feeTtlSeconds × feeVarianceBufferBps / 10000` ms (default bps 2000) extends the acceptance window of BOTH the current and the previous schedule past their `expiresAt` (v1 `getScheduleByCacheId` — a quote is honored until `expiresAt + buffer`).
+- `profitMarginBps` default 0 (v1 hardcodes 0; production may raise it via config).
 
 ### 6.2 `/relay` validation pipeline (order preserved)
 
@@ -205,22 +214,22 @@ v2 MUST preserve the following v1 semantics and constants exactly (source: v1 co
    - Gasless path: decode plaintext fee arg (`gaslessShield` arg index 2; `gaslessCrossChainShield` permitInput[2]), assert `to` equals the configured wrapper for that chain, assert fee ≥ advertised → `INVALID_TARGET` / `INVALID_DATA` / `FEE_INSUFFICIENT` accordingly.
 6. Wallet lock check → `RELAYER_BUSY` (503)
 7. Gas estimation (revert check) → `GAS_ESTIMATION_FAILED` (422)
-8. Submit with 20% gas buffer via nonce coordinator; duplicate calldata (10-min chain-scoped dedup cache) → `DUPLICATE_TX` (409); broadcast failure → `SUBMISSION_FAILED` (502).
+8. Submit with 20% gas buffer via nonce coordinator; duplicate calldata (10-min chain-scoped dedup cache keyed `chainId|keccak(to, data)`, recorded only after successful broadcast) → `DUPLICATE_TX` (409); broadcast failure → `SUBMISSION_FAILED` (502). The `DUPLICATE_TX` error message MUST embed the prior tx hash (the frontend regexes `0x[0-9a-fA-F]{64}` out of the message text for retry-resume — load-bearing contract).
 
-Error-code → HTTP-status map preserved verbatim (including 402 for fee errors, 429 for rate limiting).
+Error-code → HTTP-status map preserved verbatim (including 402 for fee errors, 429 for rate limiting). Response body shapes are v1's, FLAT: success `{ txHash, status }`; errors `{ error: <message string>, code: <CODE> }` — never a nested `{error: {code, message}}` object. The frontend parses exactly this shape.
 
 ### 6.3 Idempotency & rate limiting
 
 - Optional `idempotencyKey` on `POST /relay` (≤ 200 chars): first call executes, repeats return the recorded result; terminal status backfilled from `/status` lookups. v2 stores this in `actor.idempotency` (durable across restarts — an improvement over v1's file store, same semantics).
-- Per-IP token buckets: `POST /relay` default 10/min; GET endpoints default 60/min; refill capacity/60 per second; 429 on exhaustion; `RELAYER_TRUST_PROXY` honors `X-Forwarded-For` only when explicitly enabled. Rate-limiter state is in-memory and MUST NOT be persisted (P4).
+- Per-IP token buckets: `POST /relay` default 10/min; GET endpoints default 60/min; refill capacity/60 per second; 429 on exhaustion (body: `{ error: "Too many requests — slow down.", code: "RATE_LIMITED" }`); `RELAYER_TRUST_PROXY` honors `X-Forwarded-For` only when explicitly enabled. `GET /` and `GET /health` are NOT rate-limited (v1 behavior — health probes must never 429). Rate-limiter state is in-memory and MUST NOT be persisted (P4).
 
 ### 6.4 CCTP job state machine constants
 
-- `MAX_RELAY_RETRIES = 5`; retry backoff `2000 ms × 2^n` (2s, 4s, 8s, 16s, 32s).
-- `STUCK_TX_THRESHOLD_MS` default 600,000 (10 min; env-overridable, min 60 s): in-flight broadcast without receipt → clear submitted state, re-enter submission with fresh nonce.
-- `MAX_ATTESTATION_AGE_MS` default 3,600,000 (1 h; env-overridable, min 60 s): message older than this without attestation → dead-letter.
+- `MAX_RELAY_RETRIES = 5`; retry backoff `2000 ms × 2^(retryAttempts − 1)` (2s, 4s, 8s, 16s, 32s).
+- `STUCK_TX_THRESHOLD_MS` default 600,000 (10 min; env `RELAYER_STUCK_TX_THRESHOLD_MS`, min 60 s): in-flight broadcast without receipt past the threshold → check the mempool first (v1): if the tx is still pending, WAIT (a blind resubmit would double-spend the nonce); only when it has dropped → clear submitted state, reset the nonce stream, re-enter submission.
+- `MAX_ATTESTATION_AGE_MS` default 3,600,000 (1 h; env `RELAYER_ATTESTATION_AGE_MS`, min 60 s): message older than this without attestation → dead-letter.
 - Iris attestation polling concurrency: 8 per tick.
-- Message classification (fail-closed, §8.5) preserved bit-for-bit: min length 376 bytes; burn-message body version must equal 1; `mintRecipient` (offset 184) MUST be in the known-recipients set (empty set ⇒ relay nothing); `destinationCaller` (offset 108) must be zero or equal the configured HookRouter.
+- Message classification (fail-closed, §8.5) preserved bit-for-bit: min length 376 bytes; burn-message body version must equal 1; `mintRecipient` (offset 184) MUST be in the known-recipients set (empty set ⇒ relay nothing); a non-zero `destinationCaller` (offset 108) must equal the configured HookRouter — this check is only enforced when a HookRouter IS configured for the destination (v1 nuance: no router configured ⇒ any destinationCaller passes and the destination contract enforces it on-chain).
 
 ### 6.5 Wallet & nonce management
 
@@ -229,7 +238,7 @@ Error-code → HTTP-status map preserved verbatim (including 402 for fee errors,
 
 ### 6.6 Health classification
 
-Per-chain: `unhealthy` if never scanned or `now − lastScanAt > 10 × pollInterval`; `stale` if `> 3 × pollInterval`; `degraded` if last tick errored or `lagBlocks > 100`; else `healthy`. Rollup worst-wins; `/health` returns HTTP 503 only when rollup is `stale` or `unhealthy`. In v2 the actor's `/health` derives chain scan freshness from the **watcher's** indexing progress (read from Postgres) plus its own job-queue stats, preserving the response shape (§9.1).
+Per-chain: `unhealthy` if never scanned or `now − lastScanAt > 10 × pollInterval`; `stale` if `> 3 × pollInterval`; `degraded` if last tick errored or `lagBlocks > 100`; else `healthy`. Rollup worst-wins; `/health` returns HTTP 503 only when rollup is `stale` or `unhealthy` (i.e. 200 for `healthy` AND `degraded`), and the JSON body is identical in both cases. Response shape is v1's `RelayerHealth` exactly: `{ status, chains: ChainHealth[], generatedAt, counters }` with `generatedAt` as epoch **milliseconds (number)** and per-chain rows `{ chainName, domain, status, lastProcessedBlock, chainHead, lagBlocks, lastScanAt, lastError: {message, at} | null, pendingCount, deadLetterCount }`. `counters` uses v1's dotted keys (`submitSuccess.<selector>`, `submitFail.<selector>.<CODE>`, `feeVerifierRejects.<CODE>`, `rateLimited`, `idempotentReplay`). In v2 the actor's `/health` derives chain scan freshness from the **watcher's** indexing progress (read from Postgres) plus its own job-queue stats.
 
 ---
 
@@ -241,7 +250,7 @@ Ponder, pinned to the latest stable release at implementation time. The implemen
 
 ### 7.2 Chains, contracts, ABIs
 
-- Chain set and RPC URLs resolve from `NETWORK=local|sepolia|mainnet` + env (same URL semantics as `config/networks.ts`). Contract addresses and `startBlock` (= manifest `deployBlock`) MUST be read from `deployments/` manifests at config-build time — never hardcoded.
+- Chain set and RPC URLs resolve from `NETWORK=local|sepolia|mainnet` (alias `DEPLOY_ENV`, v1) + env, using v1's env names: `HUB_RPC`, `CLIENT_A_RPC`, `CLIENT_B_RPC` (per `config/networks.ts`). Contract addresses and `startBlock` (= manifest `deployBlock`) MUST be read from `deployments/` manifests at config-build time — never hardcoded. Manifests use the monorepo's real schema and flat naming: `privacy-pool-{hub|client|clientB}{-sepolia|-mainnet}.json` (no suffix for local, which `npm run setup` generates), each with `contracts` + `cctp` blocks and `deployBlock`; `yield-hub{-env}.json` supplies the ArmadaYieldAdapter for the hub target allowlist.
 
   | NETWORK | Hub | Clients | Iris |
   |---|---|---|---|
@@ -322,13 +331,14 @@ States: `detected → awaiting_attestation → attested → submitted → delive
 | Transition | Trigger | Notes |
 |---|---|---|
 | `detected → awaiting_attestation` | Iris mode: immediately. Mock mode: skipped (see below). | |
-| `awaiting_attestation → attested` | Iris returns `complete` attestation for `message_hash` | poll respecting `MAX_ATTESTATION_AGE_MS`, concurrency 8 |
-| `attested → submitted` | `relayWithHook` broadcast succeeds | sets `submitted_tx_hash`, `submitted_at`; on broadcast failure: `retry_attempts++`, `next_retry_at = now + 2000×2^retry_attempts`; > `MAX_RELAY_RETRIES` → `dead_letter` |
+| `awaiting_attestation → attested` | Iris poll `GET /v2/messages/{sourceDomain}?transactionHash={sourceTxHash}` returns `complete` (v1: lookup is by **source tx hash**, not messageHash — CCTP V2 source nonces are zero). When one tx emitted multiple messages, select ours by comparing bytes with the nonce and finalityThresholdExecuted slots zeroed; validate attestation ≥ 65 bytes / message ≥ 376 bytes plausible hex; the Iris-returned message MUST match the locally-observed bytes outside those two slots or the response is refused. Persist BOTH the attestation and the Iris message (`relay_message`) — the attestation signs the Iris bytes. | poll respecting `MAX_ATTESTATION_AGE_MS`, concurrency 8 |
+| `attested → submitted` | `relayWithHook(relay_message, attestation)` broadcast succeeds (`receiveMessage` on the MessageTransmitter when no HookRouter is configured — v1 fallback) | sets `submitted_tx_hash`, `submitted_at`; on broadcast failure: `retry_attempts++`, `next_retry_at = now + 2000×2^(retry_attempts−1)`; > `MAX_RELAY_RETRIES` → `dead_letter` |
+| `attested → already_delivered` | broadcast failure whose message contains v1's replay markers (`already processed` / `Nonce already used`) | destination replay protection says someone else delivered it — terminal, not a failure |
 | `submitted → delivered` | destination receipt observed | receipt via the actor's own `getTransactionReceipt` polling of `submitted_tx_hash` (its own tx — allowed RPC), corroborated by `indexed.cctp_message_received` when it lands. Records `delivered_tx_hash`, `delivered_block`, `delivered_at`. |
-| `submitted → attested` (stuck) | `now − submitted_at > STUCK_TX_THRESHOLD_MS` | clear submitted fields, nonce-coordinator `reset(chainId)`, re-submit |
-| `* → dead_letter` | attestation expiry / retries exhausted / permanent classify failure post-claim | `dead_letter_reason` set; counted in health `deadLetterCount` |
+| `submitted → attested` (stuck) | `now − submitted_at > STUCK_TX_THRESHOLD_MS` **and** the tx has dropped from the mempool (v1: `getTransaction` returns null; still-pending ⇒ wait — no blind resubmit) | clear submitted fields, nonce-coordinator `reset(chainId)`, re-submit |
+| `* → dead_letter` | attestation expiry / retries exhausted / permanent classify failure post-claim | `dead_letter_reason` set (v1 strings: `expired`, `retries-exhausted`); counted in health `deadLetterCount` |
 
-**Mock mode (`CCTP_MODE=mock`, local):** `detected → attested` immediately with the mock attestation bytes; the rest of the machine is identical. This preserves v1's local-dev behavior while exercising the same code path.
+**Mock mode (`CCTP_MODE=mock`, local):** `detected → attested` immediately with the literal empty attestation `"0x"` (v1 — the mock MessageTransmitter skips verification) and `relay_message = message_bytes`; the rest of the machine is identical. This preserves v1's local-dev behavior while exercising the same code path.
 
 All transitions are single-row transactional updates; the process crashing mid-tick MUST leave jobs resumable from their persisted state (v1's restart-resume guarantee, now for free via Postgres).
 
@@ -366,14 +376,14 @@ Guards (all MUST):
 | Endpoint | Method | Behavior |
 |---|---|---|
 | `/` | GET | service banner + endpoint list |
-| `/fees[?chainId=N]` | GET | `FeeSchedule` (§6.1); default chain = hub; 404 for unknown chain |
+| `/fees[?chainId=N]` | GET | `FeeSchedule` (§6.1); default chain = hub; unknown chain → 404 `{ error, supported: [chainIds] }` (v1 body) |
 | `/relay` | POST | `RelayRequest = { chainId, to, data, feesCacheId, idempotencyKey? }` → `{ txHash, status: "pending" }`; pipeline §6.2; errors §6.2/§6.3 |
 | `/status/:txHash[?chainId=N]` | GET | `{ status: pending\|confirmed\|failed, blockNumber?, error? }`; fan-out across chains when chainId omitted; backfills idempotency terminal status |
 | `/cctp/delivered?destinationDomain=N[&sinceMs=T][&limit=K]` | GET | `{ records: DeliveredRecord[], generatedAt }` where `DeliveredRecord = { dedupKey, sourceDomain, destinationDomain, nonce, sourceTxHash, destinationTxHash, destinationBlock, deliveredAt }`, from `actor.cctp_jobs` rows in state `delivered` with `delivered_at > sinceMs`, ordered ascending, `limit` default/max 200. **Replaces v1's `GET /cctp-status/:messageHash`**, which MUST NOT exist in v2 (P2: per-message lookups link a poller to a specific tx; the cursor feed is uniform for all watchers of a corridor). |
 | `/health` | GET | v1 `RelayerHealth` shape (§6.6): per-chain scan freshness sourced from watcher progress in Postgres; `pendingCount`/`deadLetterCount` from `actor.cctp_jobs`; `counters` field retained for frontend compatibility, mirroring a subset of Prometheus counters |
 | `/metrics` | GET | Prometheus text format (§10.1). SHOULD be bound to the internal network / not exposed through the public reverse proxy. |
 
-Rate limiting per §6.3 applies to all public endpoints. Frontend impact: only the delivery-wait tick changes (poll `/cctp/delivered` and match `sourceTxHash` locally, RPC window-scan as fallback) — everything else is shape-identical to v1.
+Rate limiting per §6.3 applies to all public endpoints except `/` and `/health` (v1). Error bodies across all endpoints are flat `{ error, code }` per §6.2. Frontend impact: only the delivery-wait tick changes (poll `/cctp/delivered` and match `sourceTxHash` locally, RPC window-scan as fallback) — everything else is shape-identical to v1.
 
 ### 9.2 Watcher (`indexerUrl`, default port 42069) — see §7.3.
 
@@ -575,3 +585,42 @@ This section specifies the frontend work required in tandem with relayer v2, and
 | M3 (actor cutover) | none required — `relayerUrl` unchanged; F2's feed tier starts returning 200 and activates naturally |
 | M4 (v1 retired) | none; confirm no lingering references to v1-only behavior |
 
+
+---
+
+## 19. Amendments (v1-code-wins corrections, per §1)
+
+2026-07-09 — corrections applied after diffing the implementation against actual v1 source
+(monorepo `main`, which includes the merged `iskay/relayer-hardening` work). Each was a case
+where this document's original text disagreed with preserved v1 behavior:
+
+1. **Iris lookup & broadcast payload (§5.2, §8.4).** Iris is queried by
+   `sourceDomain + sourceTxHash` via `GET /v2/messages` — not by `message_hash` (CCTP V2
+   source nonces are zero; Iris keys by transaction). The broadcast payload is the
+   **Iris-returned** message (nonce/finality slots filled — the attestation signs those
+   bytes), accepted only if it matches the locally-observed bytes outside those slots.
+   `actor.cctp_jobs` gains `attestation` and `relay_message` columns.
+2. **Mock attestation (§8.4)** is the literal empty bytes `"0x"`.
+3. **HTTP body shapes (§6.2, §6.3, §9.1).** Flat `{error, code}` error bodies; success
+   `{txHash, status}`; the `DUPLICATE_TX` message embeds the prior tx hash (frontend
+   retry-resume contract); 429 body fixed; `/` and `/health` exempt from rate limiting;
+   `/fees` 404 body `{error, supported}`.
+4. **Health shape (§6.6).** v1 `RelayerHealth` field names pinned: numeric `generatedAt`
+   (epoch ms), `ChainHealth` rows `{chainName, domain, …, pendingCount, deadLetterCount}`,
+   dotted counter keys; 200 for healthy|degraded with identical body on 503.
+5. **Stuck-tx recovery (§6.4, §8.4)** is mempool-aware: recover only when the tx dropped;
+   still-pending txs wait (prevents nonce double-spend). Env names are v1's
+   (`RELAYER_STUCK_TX_THRESHOLD_MS`, `RELAYER_ATTESTATION_AGE_MS`).
+6. **Retry backoff formula (§8.4)** corrected to `2000 × 2^(retry_attempts − 1)`, matching
+   the normative 2s…32s series in §6.4. Added the v1 `attested → already_delivered`
+   transition on replay-protection broadcast errors.
+7. **Config surfaces (§7.2).** v1 env names (`HUB_RPC`/`CLIENT_A_RPC`/`CLIENT_B_RPC`,
+   `DEPLOY_ENV` alias); real manifest schema and flat naming
+   (`privacy-pool-{hub|client|clientB}{-env}.json` + `yield-hub{-env}.json`). Classifier's
+   destinationCaller check applies only when a HookRouter is configured (§6.4, §8.5); v1
+   fee-quote variance buffer applies to current AND previous schedules; `profitMarginBps`
+   defaults to 0 (§6.1); `relayWithHook` falls back to `receiveMessage` when no HookRouter
+   is configured (§8.4).
+
+Also recorded in §1: the standalone-repository ruling. Implementation cross-reference:
+`.context/deviations.md` (reconciliation log with monorepo file:line evidence).

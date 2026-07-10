@@ -1,0 +1,39 @@
+{
+  "name": "armada-actor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Armada relayer v2 actor: /relay + /fees HTTP API and CCTP job state machine (spec §8)",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "migrate": "tsx src/db/migrate-cli.ts"
+  },
+  "dependencies": {
+    "ethers": "6.17.0",
+    "express": "5.2.1",
+    "node-pg-migrate": "^7.9.0",
+    "pg": "^8.16.0",
+    "pino": "^9.6.0",
+    "prom-client": "^15.1.3",
+    "tsx": "^4.19.0"
+  },
+  "optionalDependencies": {
+    "@railgun-community/engine": "9.5.1",
+    "@railgun-community/shared-models": "8.0.0",
+    "leveldown": "^6.1.1",
+    "railgun-circuit-test-artifacts": "https://ipfs-lb.com/ipfs/QmPvs6Lws1MS4CTMAQ6P3WfyFpWFKGu7o6cSbWCu3vgXLW/railgun-circuit-test-artifacts-0.0.1.tgz"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.0",
+    "@types/pg": "^8.11.0",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^7.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

@@ -1,0 +1,30 @@
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Ponder
+relayer-v2/watcher/.ponder/
+relayer-v2/watcher/generated/
+
+# Runtime state (never commit)
+relayer-v2/actor/state/
+*.leveldb/
+
+# Env files: ignore all, then explicitly allow committed templates.
+# Every allowed file MUST also be listed in .githooks/pre-commit ALLOWED_ENV_FILES.
+*.env
+.env*
+!relayer-v2/compose/local.env
+!relayer-v2/compose/sepolia.env
+!relayer-v2/compose/mainnet.env
+!relayer-v2/compose/secrets.env.example
+
+# Secrets (belt and braces; already covered by *.env)
+relayer-v2/compose/secrets.env
+
+# OS / editor
+.DS_Store
+
+# Workspace collaboration dir (Conductor)
+.context/

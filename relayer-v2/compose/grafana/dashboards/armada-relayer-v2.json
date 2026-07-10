@@ -1,0 +1,97 @@
+{
+  "__aboutme": "Starter Grafana dashboard (spec §10.3 / DEF-5): job states, relay outcomes, RPC rate, wallet balance, ETH/USD price, fallback scanner. Panels are a starting point.",
+  "title": "Armada Relayer v2",
+  "uid": "armada-relayer-v2",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "CCTP jobs by state",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [{ "expr": "sum by (state) (armada_actor_cctp_jobs)", "legendFormat": "{{state}}" }]
+    },
+    {
+      "id": 2,
+      "title": "Relay submissions (rate)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (outcome, code) (rate(armada_actor_relay_submissions_total[5m]))",
+          "legendFormat": "{{outcome}} {{code}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Actor RPC requests by method (eth_getLogs must be 0 while watcher healthy)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (method) (rate(armada_actor_rpc_requests_total[5m]))",
+          "legendFormat": "{{method}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Fallback scanner active",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [{ "expr": "armada_actor_fallback_scanner_active", "legendFormat": "chain {{chain}}" }]
+    },
+    {
+      "id": 5,
+      "title": "Wallet balance (ETH)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 8 },
+      "targets": [
+        { "expr": "armada_actor_wallet_balance_wei / 1e18", "legendFormat": "chain {{chain}}" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "ETH/USD price (+degraded)",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 16, "w": 8, "h": 8 },
+      "targets": [
+        { "expr": "armada_actor_eth_usd_price", "legendFormat": "price" },
+        { "expr": "armada_actor_eth_usd_price_degraded * 1000", "legendFormat": "degraded (×1000)" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Iris polls",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 16, "w": 8, "h": 8 },
+      "targets": [
+        { "expr": "sum by (result) (rate(armada_actor_iris_polls_total[5m]))", "legendFormat": "{{result}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Watcher indexed events (rate)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "sum by (event) (rate(ponder_indexing_completed_events[5m]))", "legendFormat": "{{event}}" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "HTTP request duration p95",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (route, le) (rate(armada_actor_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    }
+  ]
+}

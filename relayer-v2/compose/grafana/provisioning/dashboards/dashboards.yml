@@ -1,0 +1,9 @@
+# ABOUTME: Grafana dashboard provider provisioning: loads the starter dashboard JSON.
+apiVersion: 1
+providers:
+  - name: armada
+    orgId: 1
+    folder: ""
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
