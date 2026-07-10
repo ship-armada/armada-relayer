@@ -15,6 +15,7 @@ import {
   worstOf,
 } from "../lib/api-helpers";
 import { emptyQuickSync } from "./quick-sync";
+import { decodeNullifiers, decodeUnshields, type RawLogRow } from "../lib/quick-sync-decode";
 
 const deploymentsRoot =
   process.env.DEPLOYMENTS_DIR ?? join(process.cwd(), "..", "..", "deployments");
@@ -120,7 +121,10 @@ app.get("/v1/nullifiers", async (c) => {
 // Quick-sync (§7.3, fast-follow): serves the Railgun engine's AccumulatedEvents for the hub,
 // decoded server-side from stored raw logs so a frontend engine hydrates its merkletree from one
 // call instead of scanning from block 0. Railgun events live only on the hub. P1/P4 compliant.
-// NOTE: Phase 1 skeleton — returns empty; decode lands in phases 2–4 (see .context/PLAN_QUICK_SYNC.md).
+// NOTE: nullifiers + unshields decoded (phase 2); commitmentEvents land in phases 3–4
+// (transact + poseidon shield hash) — see .context/PLAN_QUICK_SYNC.md.
+const HUB_POOL_ADDRESS = hub.manifest.contracts.privacyPool!.toLowerCase();
+
 app.get("/v1/quick-sync/:chainId", async (c) => {
   const chainId = Number(c.req.param("chainId"));
   if (!Number.isInteger(chainId) || chainId !== hub.chainId) {
@@ -135,7 +139,33 @@ app.get("/v1/quick-sync/:chainId", async (c) => {
     return c.json({ error: "startingBlock is required and must be a non-negative integer" }, 400);
   }
   const through = await indexedThrough(hub.chainId);
-  const result = emptyQuickSync();
+
+  // All Railgun events (Shield/Transact/Nullified/Unshield) are emitted by the hub pool, so
+  // filtering by that address yields only decodable PrivacyPool logs (P1: contract filter only).
+  const conditions = [
+    eq(schema.rawEventLog.chainId, hub.chainId),
+    eq(schema.rawEventLog.address, HUB_POOL_ADDRESS),
+    gte(schema.rawEventLog.blockNumber, BigInt(startingBlock)),
+  ];
+  if (through !== null) conditions.push(lte(schema.rawEventLog.blockNumber, through));
+  const dbRows = await db
+    .select()
+    .from(schema.rawEventLog)
+    .where(and(...conditions))
+    .orderBy(asc(schema.rawEventLog.blockNumber), asc(schema.rawEventLog.logIndex));
+  const rows: RawLogRow[] = dbRows.map((r) => ({
+    blockNumber: r.blockNumber,
+    txHash: r.txHash,
+    logIndex: r.logIndex,
+    data: r.data,
+    topics: JSON.parse(r.topics) as string[],
+  }));
+
+  const result = {
+    ...emptyQuickSync(),
+    nullifierEvents: decodeNullifiers(rows),
+    unshieldEvents: decodeUnshields(rows),
+  };
   c.header("cache-control", cacheControlFor(null, through, hub.confirmations));
   return c.json({ ...result, indexedThrough: through === null ? null : Number(through) });
 });
