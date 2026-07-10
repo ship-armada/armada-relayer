@@ -4,7 +4,13 @@ import type { TransactionResponse } from "ethers";
 import { RelayError } from "../http/errors.js";
 import type { FeeCalculator } from "./fee-calculator.js";
 import { advertisedFee } from "./fee-calculator.js";
-import { ALLOWED_SELECTORS, GASLESS_SELECTORS, advertisedFeeKeys, selectorOf } from "./selectors.js";
+import {
+  ALLOWED_SELECTORS,
+  GASLESS_SELECTORS,
+  SELECTOR_NAMES,
+  advertisedFeeKeys,
+  selectorOf,
+} from "./selectors.js";
 import { verifyGaslessFee, type GaslessVerifierContext } from "./gasless-fee-verifier.js";
 import { verifyBroadcasterFee, type BroadcasterVerifierContext } from "./broadcaster-fee-verifier.js";
 import type { DedupCache } from "./dedup-cache.js";
@@ -45,6 +51,9 @@ export interface PrivacyRelayDeps {
   dedup: DedupCache;
   onOutcome?: (selector: string, outcome: "success" | "fail", code: string) => void;
   onFeeReject?: (code: string) => void;
+  /** v1 /health counters — incremented at v1's exact sites: feeVerifierRejects.<CODE> only
+   * at the verifier step, submitSuccess/<submitFail> only at the submit step. */
+  counters?: { inc(key: string): void };
 }
 
 export class PrivacyRelay {
@@ -107,7 +116,10 @@ export class PrivacyRelay {
         await verifyBroadcasterFee(this.deps.broadcasterCtx, req.data, advertised);
       }
     } catch (err) {
-      if (err instanceof RelayError) this.deps.onFeeReject?.(err.code);
+      if (err instanceof RelayError) {
+        this.deps.onFeeReject?.(err.code);
+        this.deps.counters?.inc(`feeVerifierRejects.${err.code}`);
+      }
       throw err;
     }
 
@@ -133,7 +145,9 @@ export class PrivacyRelay {
       // 8. duplicate-calldata dedup (v1: 409 message embeds the prior txHash — the frontend
       // regexes it out for retry-resume), then submit with a 20% gas buffer
       const duplicate = this.deps.dedup.lookup(req.chainId, req.to, req.data);
+      const selectorName = SELECTOR_NAMES.get(selector) ?? "unknown";
       if (duplicate) {
+        this.deps.counters?.inc(`submitFail.${selectorName}.DUPLICATE_TX`);
         throw new RelayError(
           "DUPLICATE_TX",
           `Duplicate transaction on chain ${req.chainId} (already submitted as ${duplicate})`,
@@ -151,9 +165,11 @@ export class PrivacyRelay {
           { chainId: req.chainId, data: calldataPreview(req.data), err: (err as Error).message },
           "relay broadcast failed",
         );
+        this.deps.counters?.inc(`submitFail.${selectorName}.SUBMISSION_FAILED`);
         throw new RelayError("SUBMISSION_FAILED", "broadcast failed");
       }
       this.deps.dedup.record(req.chainId, req.to, req.data, tx.hash);
+      this.deps.counters?.inc(`submitSuccess.${selectorName}`);
       return { txHash: tx.hash, status: "pending" };
     } finally {
       this.deps.submitter.release(req.chainId);

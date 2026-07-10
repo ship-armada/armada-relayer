@@ -1,0 +1,197 @@
+{
+  "banner": {
+    "status": 200,
+    "body": {
+      "service": "armada-relayer",
+      "status": "running",
+      "endpoints": [
+        "GET /fees",
+        "POST /relay",
+        "GET /status/:txHash",
+        "GET /cctp-status/:messageHash",
+        "GET /health"
+      ]
+    }
+  },
+  "fees-hub": {
+    "status": 200,
+    "body": {
+      "cacheId": "fee-31337-1783647833139-1",
+      "expiresAt": 1783648133139,
+      "chainId": 31337,
+      "broadcasterRailgunAddress": "0zk1qyk9nn28x0u3rwn5pknglda68wrn7gw6anjw8gg94mcj6eq5u48tlrv7j6fe3z53lama02nutwtcqc979wnce0qwly4y7w4rls5cq040g7z8eagshxrw5ajy990",
+      "fees": {
+        "transfer": "1000000",
+        "unshield": "1000000",
+        "crossContract": "4000000",
+        "crossChainShield": "1000000",
+        "crossChainUnshield": "1000000",
+        "shield": "600000",
+        "shieldXchain": "800000"
+      }
+    }
+  },
+  "fees-client": {
+    "status": 200,
+    "body": {
+      "cacheId": "fee-31338-1783647833152-1",
+      "expiresAt": 1783648133152,
+      "chainId": 31338,
+      "broadcasterRailgunAddress": "0zk1qyk9nn28x0u3rwn5pknglda68wrn7gw6anjw8gg94mcj6eq5u48tlrv7j6fe3z53lama02nutwtcqc979wnce0qwly4y7w4rls5cq040g7z8eagshxrw5ajy990",
+      "fees": {
+        "transfer": "1000000",
+        "unshield": "1000000",
+        "crossContract": "4000000",
+        "crossChainShield": "1000000",
+        "crossChainUnshield": "1000000",
+        "shield": "600000",
+        "shieldXchain": "800000"
+      }
+    }
+  },
+  "fees-unknown-chain": {
+    "status": 404,
+    "body": {
+      "error": "No fee schedule for chain 999",
+      "supported": [
+        31337,
+        31338,
+        31339
+      ]
+    }
+  },
+  "relay-missing-fields": {
+    "status": 400,
+    "body": {
+      "error": "Missing required fields: chainId, to, data, feesCacheId"
+    }
+  },
+  "relay-bad-idempotency-key": {
+    "status": 400,
+    "body": {
+      "error": "Invalid idempotencyKey",
+      "code": "INVALID_DATA"
+    }
+  },
+  "relay-invalid-chain": {
+    "status": 400,
+    "body": {
+      "error": "Unsupported chain ID: 999. Configured: 31337, 31338, 31339",
+      "code": "INVALID_CHAIN"
+    }
+  },
+  "relay-invalid-target": {
+    "status": 400,
+    "body": {
+      "error": "Target contract 0x9999999999999999999999999999999999999999 is not allowed on chain 31337. Allowed: 0xe6e340d132b5f46d1e472debcd681b2abc16e57e, 0x2bdcc0de6be1f7d2ee689a0342d76f52e8efaba3, 0xcd8a1c3ba11cf5ecfa6267617243239504a98d90",
+      "code": "INVALID_TARGET"
+    }
+  },
+  "relay-fee-expired": {
+    "status": 402,
+    "body": {
+      "error": "Fee quote has expired or is invalid for chain 31337. Please re-fetch fees.",
+      "code": "FEE_EXPIRED"
+    }
+  },
+  "relay-short-data": {
+    "status": 400,
+    "body": {
+      "error": "Transaction data is empty or too short.",
+      "code": "INVALID_DATA"
+    }
+  },
+  "relay-bad-selector": {
+    "status": 400,
+    "body": {
+      "error": "Unknown function selector: 0xdeadbeef. Allowed: transact(0xd8ae136a), lendAndShield(0xf2987ad1), redeemAndShield(0x0793b70e), atomicCrossChainUnshield(0xe484d408), gaslessShield(0x1de05794), gaslessCrossChainShield(0xa608b736)",
+      "code": "INVALID_DATA"
+    }
+  },
+  "relay-gasless-low-fee": {
+    "status": 402,
+    "body": {
+      "error": "Gasless wrapper fee 1 is below advertised fee 600000",
+      "code": "FEE_INSUFFICIENT"
+    }
+  },
+  "relay-transact-unverifiable-fee": {
+    "status": 402,
+    "body": {
+      "error": "Broadcaster fee too low: paid 0 USDC raw, advertised 1000000 USDC raw. Re-fetch the fee quote and re-build the proof with the matching broadcaster fee.",
+      "code": "FEE_INSUFFICIENT"
+    }
+  },
+  "status-malformed-hash": {
+    "status": 400,
+    "body": {
+      "error": "Invalid transaction hash"
+    }
+  },
+  "status-bad-chainid": {
+    "status": 400,
+    "body": {
+      "error": "Invalid chainId: abc"
+    }
+  },
+  "status-unknown-tx": {
+    "status": 200,
+    "body": {
+      "status": "pending"
+    }
+  },
+  "health": {
+    "status": 200,
+    "body": {
+      "status": "healthy",
+      "chains": [
+        {
+          "chainName": "Hub",
+          "domain": 100,
+          "status": "healthy",
+          "lastProcessedBlock": 550,
+          "chainHead": 550,
+          "lagBlocks": 0,
+          "lastScanAt": 1783647845411,
+          "lastError": null,
+          "pendingCount": 0,
+          "deadLetterCount": 0
+        },
+        {
+          "chainName": "Client A",
+          "domain": 101,
+          "status": "healthy",
+          "lastProcessedBlock": 550,
+          "chainHead": 550,
+          "lagBlocks": 0,
+          "lastScanAt": 1783647845411,
+          "lastError": null,
+          "pendingCount": 0,
+          "deadLetterCount": 0
+        },
+        {
+          "chainName": "Client B",
+          "domain": 102,
+          "status": "healthy",
+          "lastProcessedBlock": 550,
+          "chainHead": 550,
+          "lagBlocks": 0,
+          "lastScanAt": 1783647845411,
+          "lastError": null,
+          "pendingCount": 0,
+          "deadLetterCount": 0
+        }
+      ],
+      "generatedAt": 1783647847185,
+      "counters": {
+        "feeVerifierRejects.FEE_INSUFFICIENT": 2
+      }
+    }
+  },
+  "cctp-status-removed": {
+    "status": 404,
+    "body": {
+      "status": "unknown"
+    }
+  }
+}

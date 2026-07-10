@@ -107,6 +107,7 @@ function makeApp(overrides: Partial<HttpDeps> = {}): Harness {
       submit: async () => ({ hash: "0x" + "cc".repeat(32) }),
     },
     dedup: new DedupCache(),
+    counters,
   });
   const app = createApp({
     hubChainId: 31337,
@@ -206,8 +207,32 @@ describe("POST /relay", () => {
       expect(res.body.code).toBe(code);
       expect(typeof res.body.error).toBe("string"); // flat, not nested
     }
-    const snapshot = h.counters.snapshot();
-    expect(snapshot["feeVerifierRejects.FEE_EXPIRED"]).toBe(1);
+    // v1 semantics: validation-stage rejects (steps 1-4) increment NO counters;
+    // feeVerifierRejects.<CODE> comes only from the verifier step (5).
+    expect(h.counters.snapshot()).toEqual({});
+  });
+
+  it("counters follow v1 sites: verifier rejects counted, validation rejects not", async () => {
+    const h = makeApp();
+    const cacheId = await freshCacheId(h);
+    // FEE_EXPIRED (step 3) — no counter
+    await request(h.app)
+      .post("/relay")
+      .send({ chainId: 31337, to: POOL_ADDRESS, data: "0x00", feesCacheId: "stale" });
+    // gasless below advertised (step 5) — feeVerifierRejects.FEE_INSUFFICIENT
+    const GASLESS_IFACE = new Interface([
+      "function gaslessShield(address user, uint256 totalAmount, uint256 fee, uint256 deadline, uint8 v, bytes32 r, bytes32 s, ((bytes32,(uint8,address,uint256),uint120),(bytes32[3],bytes32)) shieldRequest, address integrator)",
+    ]);
+    const lowFee = GASLESS_IFACE.encodeFunctionData("gaslessShield", [
+      "0x" + "11".repeat(20), 1000n, 1n, 9999n, 27, "0x" + "01".repeat(32), "0x" + "02".repeat(32),
+      [["0x" + "03".repeat(32), [0, USDC, 0n], 500n],
+       [["0x" + "04".repeat(32), "0x" + "05".repeat(32), "0x" + "06".repeat(32)], "0x" + "07".repeat(32)]],
+      "0x" + "00".repeat(20),
+    ]);
+    await request(h.app)
+      .post("/relay")
+      .send({ chainId: 31337, to: WRAPPER, data: lowFee, feesCacheId: cacheId });
+    expect(h.counters.snapshot()).toEqual({ "feeVerifierRejects.FEE_INSUFFICIENT": 1 });
   });
 
   it("idempotencyKey: first call executes, repeat returns the recorded result", async () => {
