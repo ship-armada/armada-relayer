@@ -109,6 +109,22 @@ describe("manifest source selection (resolveDeploymentSource)", () => {
     );
     expect(s).toMatchObject({ kind: "registry", root: "/reg" });
   });
+
+  it("treats compose-passed EMPTY STRINGS as unset (${VAR:-} → '')", () => {
+    // Compose passes unset vars as "", which `??` would NOT catch — regression for the
+    // sepolia boot failure "no registry environment maps to NETWORK=sepolia".
+    const s = resolveDeploymentSource(
+      { DEPLOYMENT_INSTANCE: "demo1", DEPLOYMENT_ENVIRONMENT: "", DEPLOYMENT_REGISTRY_DIR: "" },
+      "sepolia",
+      "/d",
+    );
+    expect(s).toEqual({ kind: "registry", root: "/d/registry", environment: "testnet", instance: "demo1" });
+    // empty DEPLOYMENT_INSTANCE ⇒ flat (not a broken registry source)
+    expect(resolveDeploymentSource({ DEPLOYMENT_INSTANCE: "" }, "sepolia", "/d")).toEqual({
+      kind: "flat",
+      root: "/d",
+    });
+  });
 });
 
 describe("flat provider (local / monorepo e2e)", () => {
