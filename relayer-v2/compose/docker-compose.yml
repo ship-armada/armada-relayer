@@ -26,6 +26,10 @@ services:
     # Not exposed outside the compose network (S4).
 
   watcher:
+    # Published by CI on merge to main (sha + latest). `docker compose pull` uses these;
+    # `docker compose up --build` rebuilds the working tree and tags it as this same name.
+    # Pin a specific build on the VPS with IMAGE_TAG=<sha>.
+    image: ghcr.io/ship-armada/armada-watcher:${IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: relayer-v2/watcher/Dockerfile
@@ -61,6 +65,10 @@ services:
       start_period: 30s
 
   actor:
+    # Published by CI on merge to main (sha + latest). `docker compose pull` uses these;
+    # `docker compose up --build` rebuilds the working tree and tags it as this same name.
+    # Pin a specific build on the VPS with IMAGE_TAG=<sha>.
+    image: ghcr.io/ship-armada/armada-actor:${IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: relayer-v2/actor/Dockerfile

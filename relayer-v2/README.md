@@ -52,13 +52,23 @@ npm run actor:dev           # tsx watch (needs DATABASE_URL + RELAYER_RAILGUN_MN
 
 ### Sepolia / mainnet
 
+Deploys **pull prebuilt images** from GHCR (published by CI on merge to main) instead of
+building on the box:
+
 ```bash
 git submodule update --init deployments/registry   # central deployment registry (§7.2)
 cp relayer-v2/compose/secrets.env.example relayer-v2/compose/secrets.env  # fill in
-npm run relayer-v2:sepolia   # sepolia.env sets DEPLOYMENT_INSTANCE=demo1
+# GHCR images are private by default — either make the packages public, or log in first:
+#   echo <PAT-with-read:packages> | docker login ghcr.io -u <user> --password-stdin
+npm run relayer-v2:sepolia   # docker compose pull && up -d; sepolia.env sets DEPLOYMENT_INSTANCE=demo1
+# Pin a specific build instead of :latest — IMAGE_TAG=<git-sha> npm run relayer-v2:sepolia
 # mainnet is a CONFIGURATION POSTURE (§7.2): config builds/validates, but boot fails loudly
 # until a mainnet instance is published in the registry and named via DEPLOYMENT_INSTANCE.
 ```
+
+Images: `ghcr.io/ship-armada/armada-{actor,watcher}:{latest|<git-sha>}`. Local mode
+(`npm run relayer-v2`) still builds the working tree with `up --build` and tags it as the same
+image name — no pull needed for dev.
 
 Testnet/mainnet manifests come from the **central registry**
 ([ship-armada/armada-deployments](https://github.com/ship-armada/armada-deployments), a pinned
