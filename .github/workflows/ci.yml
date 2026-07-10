@@ -1,0 +1,66 @@
+# ABOUTME: CI — typecheck + tests for the actor and watcher packages on every PR and main push.
+# ABOUTME: Submodules are checked out recursively because the registry-provider tests read deployments/registry.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to save minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actor:
+    name: actor (typecheck + tests)
+    runs-on: ubuntu-latest
+    # Disposable Postgres so pg-integration.test.ts runs for real (migrations, guarded job
+    # transitions, the §8.3 discovery query) instead of auto-skipping.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: armada
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ACTOR_TEST_PG_URL: postgres://postgres:postgres@localhost:5432/armada
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive # registry tests resolve demo1 from deployments/registry
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: relayer-v2/actor/package-lock.json
+      - run: npm ci --legacy-peer-deps # repo convention (CLAUDE.md)
+        working-directory: relayer-v2/actor
+      - run: npm run typecheck
+        working-directory: relayer-v2/actor
+      - run: npm test
+        working-directory: relayer-v2/actor
+
+  watcher:
+    name: watcher (typecheck + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: relayer-v2/watcher/package-lock.json
+      - run: npm ci --legacy-peer-deps
+        working-directory: relayer-v2/watcher
+      - run: npm run typecheck
+        working-directory: relayer-v2/watcher
+      - run: npm test
+        working-directory: relayer-v2/watcher
