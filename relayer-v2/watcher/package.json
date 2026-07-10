@@ -14,7 +14,8 @@
   "dependencies": {
     "hono": "^4.6.0",
     "ponder": "0.16.8",
-    "viem": "^2.30.0"
+    "viem": "^2.30.0",
+    "@railgun-community/poseidon-hash-wasm": "1.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",

@@ -14,13 +14,13 @@ import {
   classifyFreshness,
   worstOf,
 } from "../lib/api-helpers";
-import { emptyQuickSync } from "./quick-sync";
 import {
   decodeNullifiers,
   decodeUnshields,
-  decodeTransactCommitments,
+  decodeCommitmentEvents,
   type RawLogRow,
 } from "../lib/quick-sync-decode";
+import { initPoseidonWasm } from "../lib/poseidon";
 
 const deploymentsRoot =
   process.env.DEPLOYMENTS_DIR ?? join(process.cwd(), "..", "..", "deployments");
@@ -143,6 +143,7 @@ app.get("/v1/quick-sync/:chainId", async (c) => {
   if (startingBlockRaw === undefined || !Number.isInteger(startingBlock) || startingBlock < 0) {
     return c.json({ error: "startingBlock is required and must be a non-negative integer" }, 400);
   }
+  await initPoseidonWasm(); // idempotent; needed for shield commitment hashes
   const through = await indexedThrough(hub.chainId);
 
   // All Railgun events (Shield/Transact/Nullified/Unshield) are emitted by the hub pool, so
@@ -166,11 +167,9 @@ app.get("/v1/quick-sync/:chainId", async (c) => {
     topics: JSON.parse(r.topics) as string[],
   }));
 
-  // commitmentEvents: transact decoded here (phase 3); shield commitments (poseidon hash) added
-  // in phase 4. Ordered by (block, logIndex) via the query; shields will merge-sort in.
+  // commitmentEvents: Shield + Transact in one block/log-ordered pass (poseidon shield hashes).
   const result = {
-    ...emptyQuickSync(),
-    commitmentEvents: decodeTransactCommitments(rows),
+    commitmentEvents: decodeCommitmentEvents(rows),
     nullifierEvents: decodeNullifiers(rows),
     unshieldEvents: decodeUnshields(rows),
   };
