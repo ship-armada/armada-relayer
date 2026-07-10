@@ -14,6 +14,7 @@ import {
   classifyFreshness,
   worstOf,
 } from "../lib/api-helpers";
+import { emptyQuickSync } from "./quick-sync";
 import {
   decodeNullifiers,
   decodeUnshields,
@@ -21,6 +22,9 @@ import {
   type RawLogRow,
 } from "../lib/quick-sync-decode";
 import { initPoseidonWasm } from "../lib/poseidon";
+
+// Max block window served per quick-sync page (whole blocks; caller paginates by servedThroughBlock).
+const QUICK_SYNC_MAX_BLOCK_WINDOW = Number(process.env.QUICK_SYNC_MAX_BLOCK_WINDOW ?? 100_000);
 
 const deploymentsRoot =
   process.env.DEPLOYMENTS_DIR ?? join(process.cwd(), "..", "..", "deployments");
@@ -145,19 +149,30 @@ app.get("/v1/quick-sync/:chainId", async (c) => {
   }
   await initPoseidonWasm(); // idempotent; needed for shield commitment hashes
   const through = await indexedThrough(hub.chainId);
+  if (through === null || BigInt(startingBlock) > through) {
+    // Nothing indexed yet, or the caller is already past head — empty page at the cursor.
+    c.header("cache-control", "public, max-age=5");
+    return c.json({ ...emptyQuickSync(), servedThroughBlock: startingBlock, indexedThrough: through === null ? null : Number(through) });
+  }
+
+  // Bound the response to a block window (whole blocks only — never splits an event) so a
+  // cold sync from block 0 can't return an unbounded payload. The caller continues with
+  // startingBlock = servedThroughBlock + 1 until servedThroughBlock === indexedThrough.
+  const windowEnd = BigInt(Math.min(Number(through), startingBlock + QUICK_SYNC_MAX_BLOCK_WINDOW - 1));
 
   // All Railgun events (Shield/Transact/Nullified/Unshield) are emitted by the hub pool, so
   // filtering by that address yields only decodable PrivacyPool logs (P1: contract filter only).
-  const conditions = [
-    eq(schema.rawEventLog.chainId, hub.chainId),
-    eq(schema.rawEventLog.address, HUB_POOL_ADDRESS),
-    gte(schema.rawEventLog.blockNumber, BigInt(startingBlock)),
-  ];
-  if (through !== null) conditions.push(lte(schema.rawEventLog.blockNumber, through));
   const dbRows = await db
     .select()
     .from(schema.rawEventLog)
-    .where(and(...conditions))
+    .where(
+      and(
+        eq(schema.rawEventLog.chainId, hub.chainId),
+        eq(schema.rawEventLog.address, HUB_POOL_ADDRESS),
+        gte(schema.rawEventLog.blockNumber, BigInt(startingBlock)),
+        lte(schema.rawEventLog.blockNumber, windowEnd),
+      ),
+    )
     .orderBy(asc(schema.rawEventLog.blockNumber), asc(schema.rawEventLog.logIndex));
   const rows: RawLogRow[] = dbRows.map((r) => ({
     blockNumber: r.blockNumber,
@@ -173,8 +188,12 @@ app.get("/v1/quick-sync/:chainId", async (c) => {
     nullifierEvents: decodeNullifiers(rows),
     unshieldEvents: decodeUnshields(rows),
   };
-  c.header("cache-control", cacheControlFor(null, through, hub.confirmations));
-  return c.json({ ...result, indexedThrough: through === null ? null : Number(through) });
+  c.header("cache-control", cacheControlFor(windowEnd, through, hub.confirmations));
+  return c.json({
+    ...result,
+    servedThroughBlock: Number(windowEnd), // caller resumes at windowEnd + 1 while < indexedThrough
+    indexedThrough: Number(through),
+  });
 });
 
 app.get("/v1/logs", async (c) => {
