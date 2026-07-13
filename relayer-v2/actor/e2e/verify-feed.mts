@@ -3,7 +3,10 @@
 import { JsonRpcProvider } from "ethers";
 import { ChainlinkPriceSource, chainlinkAggregator } from "../src/relay/price-source.js";
 
-const RPC = process.env.HUB_RPC ?? "https://ethereum-sepolia-rpc.publicnode.com";
+// HUB_RPC may be a comma-separated pool (see compose/secrets.env.example); use the first URL.
+const RPC = (process.env.HUB_RPC ?? "https://ethereum-sepolia-rpc.publicnode.com")
+  .split(",")[0]!
+  .trim();
 const FEED = process.env.ETH_USD_FEED_ADDRESS ?? "0x694AA1769357215DE4FAC081bf1f309aDC325306";
 const provider = new JsonRpcProvider(RPC, undefined, { staticNetwork: true });
 const reader = chainlinkAggregator(FEED, provider);
