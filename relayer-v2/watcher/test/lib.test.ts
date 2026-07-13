@@ -85,8 +85,36 @@ describe("config derivation from manifests (§7.2)", () => {
   it("resolves the local network with defaults", () => {
     const chains = resolveChains({ NETWORK: "local" } as NodeJS.ProcessEnv, DEPLOYMENTS);
     expect(chains.map((c) => c.chainId)).toEqual([31337, 31338, 31339]);
-    expect(chains[0]!.rpcUrl).toBe("http://127.0.0.1:8545");
+    expect(chains[0]!.rpcUrls).toEqual(["http://127.0.0.1:8545"]);
     expect(chains[0]!.manifest.contracts.privacyPool).toMatch(/^0x/);
+  });
+
+  it("splits comma-separated RPC env vars into a provider list (trimmed)", () => {
+    // Ponder load-balances across all URLs in the list; a single URL stays a 1-element list.
+    const chains = resolveChains(
+      {
+        NETWORK: "local",
+        HUB_RPC: "https://rpc-a.example, https://rpc-b.example ,wss://rpc-c.example",
+        CLIENT_A_RPC: "https://rpc-d.example",
+      } as NodeJS.ProcessEnv,
+      DEPLOYMENTS,
+    );
+    expect(chains[0]!.rpcUrls).toEqual([
+      "https://rpc-a.example",
+      "https://rpc-b.example",
+      "wss://rpc-c.example",
+    ]);
+    expect(chains[1]!.rpcUrls).toEqual(["https://rpc-d.example"]);
+    expect(chains[2]!.rpcUrls).toEqual(["http://127.0.0.1:8547"]); // default untouched
+  });
+
+  it("rejects RPC env vars that are only commas/whitespace", () => {
+    expect(() =>
+      resolveChains(
+        { NETWORK: "local", HUB_RPC: " , " } as NodeJS.ProcessEnv,
+        DEPLOYMENTS,
+      ),
+    ).toThrow(/Missing RPC URL.*HUB_RPC/);
   });
 
   it("resolves sepolia from the central registry (DEPLOYMENT_INSTANCE=demo1)", () => {

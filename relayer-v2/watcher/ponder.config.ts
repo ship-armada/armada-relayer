@@ -18,7 +18,7 @@ const chains = Object.fromEntries(
     c.name,
     {
       id: c.chainId,
-      rpc: c.rpcUrl,
+      rpc: c.rpcUrls,
       pollingInterval: Number(process.env[`POLLING_INTERVAL_${c.chainId}`] ?? c.pollingIntervalMs),
     },
   ]),

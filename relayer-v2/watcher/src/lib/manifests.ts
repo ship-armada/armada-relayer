@@ -46,7 +46,8 @@ export interface Manifest {
 }
 
 export interface ResolvedChain extends WatcherChain {
-  rpcUrl: string;
+  /** One or more provider URLs; Ponder load-balances across all of them. */
+  rpcUrls: string[];
   manifest: Manifest;
 }
 
@@ -137,8 +138,13 @@ export function resolveChains(env: NodeJS.ProcessEnv, deploymentsRoot: string): 
   const network = networkName(env);
   const source = resolveSource(env, deploymentsRoot);
   return CHAINS[network].map((chain) => {
-    const rpcUrl = env[chain.rpcUrlEnv] ?? chain.defaultRpcUrl;
-    if (!rpcUrl) {
+    // Comma-separated lists are supported so free-tier providers can be pooled; Ponder
+    // treats each URL as an independent rate-limit bucket and fails over on the first 429.
+    const rpcUrls = (env[chain.rpcUrlEnv] ?? chain.defaultRpcUrl ?? "")
+      .split(",")
+      .map((url) => url.trim())
+      .filter((url) => url.length > 0);
+    if (rpcUrls.length === 0) {
       throw new Error(`Missing RPC URL for chain ${chain.chainId}: set ${chain.rpcUrlEnv}`);
     }
     const path =
@@ -163,7 +169,7 @@ export function resolveChains(env: NodeJS.ProcessEnv, deploymentsRoot: string): 
     if (!/^0x[0-9a-fA-F]{40}$/.test(manifest.cctp?.messageTransmitter ?? "")) {
       throw new Error(`Manifest ${path} missing cctp.messageTransmitter`);
     }
-    return { ...chain, rpcUrl, manifest };
+    return { ...chain, rpcUrls, manifest };
   });
 }
 

@@ -82,7 +82,7 @@ uses flat files from the monorepo instead (no registry). See `deployments/README
 | `NETWORK` (alias `DEPLOY_ENV`) | both | `local` | `local\|sepolia\|mainnet` (§7.2) |
 | `CCTP_MODE` | actor | `mock` local, `real` else | v1 semantics; mainnet+mock forbidden |
 | `DATABASE_URL` | both | — | per-role URLs in compose (`watcher_rw` / `actor_rw`, §5) |
-| `HUB_RPC` / `CLIENT_A_RPC` / `CLIENT_B_RPC` | both | local defaults only | v1 names; paid-key URLs are secrets (§11.1) |
+| `HUB_RPC` / `CLIENT_A_RPC` / `CLIENT_B_RPC` | both | local defaults only | v1 names; paid-key URLs are secrets (§11.1); comma-separated lists allowed — watcher pools all URLs, actor uses the first |
 | `IRIS_API_URL` | actor | per network (§7.2) | override the Iris base URL |
 | `DEPLOYMENTS_DIR` | both | `../../deployments` | manifest root; registry defaults to `<dir>/registry` (§7.2) |
 | `DEPLOYMENT_INSTANCE` | both | — (flat files) | registry instance, e.g. `demo1`; unset ⇒ flat local manifests |
