@@ -119,7 +119,13 @@ export function buildConfig(env: NodeJS.ProcessEnv, deploymentsRoot: string): Ac
 
   const rpcUrls = new Map<number, string>();
   for (const chain of allChains(topology)) {
-    const url = env[chain.rpcUrlEnv] ?? chain.defaultRpcUrl;
+    // The shared RPC env vars may hold a comma-separated provider list (the watcher pools
+    // them); the actor uses only the first entry so nonce views, broadcasts, and receipt
+    // polling all see one consistent mempool.
+    const url = (env[chain.rpcUrlEnv] ?? chain.defaultRpcUrl ?? "")
+      .split(",")
+      .map((u) => u.trim())
+      .find((u) => u.length > 0);
     if (!url) {
       throw new Error(
         `Missing RPC URL for chain ${chain.chainId} (${chain.name}): set ${chain.rpcUrlEnv}`,

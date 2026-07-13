@@ -227,6 +227,25 @@ describe("buildConfig", () => {
     expect(config.rpcUrls.get(31339)).toBe("http://127.0.0.1:8547"); // default preserved
   });
 
+  it("takes the first URL when an RPC env var holds a comma-separated list", () => {
+    // The watcher pools comma-separated providers; the actor stays on a single provider
+    // (first entry) so nonce views and receipt polling remain consistent.
+    const config = buildConfig(
+      {
+        ...BASE_ENV,
+        HUB_RPC: " http://hub:1111 , http://hub:2222",
+      } as NodeJS.ProcessEnv,
+      FIXTURES,
+    );
+    expect(config.rpcUrls.get(31337)).toBe("http://hub:1111");
+  });
+
+  it("rejects RPC env vars that are only commas/whitespace", () => {
+    expect(() =>
+      buildConfig({ ...BASE_ENV, HUB_RPC: " , " } as NodeJS.ProcessEnv, FIXTURES),
+    ).toThrow(/Missing RPC URL.*HUB_RPC/);
+  });
+
   it("CCTP_MODE: local defaults to mock; mainnet+mock is forbidden", () => {
     expect(buildConfig(BASE_ENV as NodeJS.ProcessEnv, FIXTURES).cctpMode).toBe("mock");
     expect(() =>
