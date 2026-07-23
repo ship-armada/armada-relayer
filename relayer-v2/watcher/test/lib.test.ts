@@ -9,6 +9,9 @@ import {
   protocolAddressAllowlist,
   networkName,
   resolveSource,
+  cctpStartBlock,
+  hookRouterAddress,
+  messageTransmitterChain,
 } from "../src/lib/manifests";
 import {
   parseRangeParams,
@@ -185,6 +188,110 @@ describe("config derivation from manifests (§7.2)", () => {
     const allowlist = protocolAddressAllowlist(chains);
     expect(allowlist.get(31337)!.has("0x5fbdb2315678afecb367f032d93f642f64180aa3")).toBe(true);
     expect(allowlist.get(31337)!.has("0x" + "99".repeat(20))).toBe(false);
+  });
+});
+
+describe("cctpStartBlock (forward-only CCTP indexing)", () => {
+  const localChains = () =>
+    resolveChains({ NETWORK: "local" } as NodeJS.ProcessEnv, DEPLOYMENTS);
+
+  it("defaults to \"latest\" when neither env nor manifest pins a block", () => {
+    const chain = localChains()[0]!; // fixtures carry no cctp.startBlock
+    expect(cctpStartBlock({} as NodeJS.ProcessEnv, chain)).toBe("latest");
+  });
+
+  it("reads an absolute block from CCTP_START_BLOCK_<chainId>", () => {
+    const chain = localChains()[0]!;
+    expect(
+      cctpStartBlock({ CCTP_START_BLOCK_31337: "8000000" } as unknown as NodeJS.ProcessEnv, chain),
+    ).toBe(8000000);
+  });
+
+  it("accepts the literal \"latest\" override", () => {
+    const chain = localChains()[0]!;
+    expect(
+      cctpStartBlock({ CCTP_START_BLOCK_31337: "latest" } as unknown as NodeJS.ProcessEnv, chain),
+    ).toBe("latest");
+  });
+
+  it("treats an empty-string env var as unset (compose ${VAR:-} convention)", () => {
+    const chain = localChains()[0]!;
+    expect(
+      cctpStartBlock({ CCTP_START_BLOCK_31337: "" } as unknown as NodeJS.ProcessEnv, chain),
+    ).toBe("latest");
+  });
+
+  it("rejects a non-integer / negative override loudly", () => {
+    const chain = localChains()[0]!;
+    expect(() =>
+      cctpStartBlock({ CCTP_START_BLOCK_31337: "-1" } as unknown as NodeJS.ProcessEnv, chain),
+    ).toThrow(/CCTP_START_BLOCK_31337/);
+    expect(() =>
+      cctpStartBlock({ CCTP_START_BLOCK_31337: "1.5" } as unknown as NodeJS.ProcessEnv, chain),
+    ).toThrow(/CCTP_START_BLOCK_31337/);
+  });
+
+  it("honors a manifest cctp.startBlock between the env override and the default", () => {
+    const chain = localChains()[0]!;
+    const pinned = { ...chain, manifest: { ...chain.manifest, cctp: { ...chain.manifest.cctp, startBlock: 12345 } } };
+    expect(cctpStartBlock({} as NodeJS.ProcessEnv, pinned)).toBe(12345);
+    // env override still wins over the manifest field
+    expect(
+      cctpStartBlock({ CCTP_START_BLOCK_31337: "999" } as unknown as NodeJS.ProcessEnv, pinned),
+    ).toBe(999);
+  });
+});
+
+describe("hookRouterAddress (MessageReceived caller filter source)", () => {
+  it("returns the lowercased hookRouter when the manifest has one", () => {
+    const chain = resolveChains({ NETWORK: "local" } as NodeJS.ProcessEnv, DEPLOYMENTS)[0]!;
+    expect(hookRouterAddress(chain)).toBe("0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0");
+  });
+
+  it("returns null when the manifest carries no hookRouter (unfiltered fallback)", () => {
+    const chain = resolveChains({ NETWORK: "local" } as NodeJS.ProcessEnv, DEPLOYMENTS)[0]!;
+    const { hookRouter, ...rest } = chain.manifest.contracts;
+    void hookRouter;
+    const noRouter = { ...chain, manifest: { ...chain.manifest, contracts: rest } };
+    expect(hookRouterAddress(noRouter)).toBeNull();
+  });
+});
+
+describe("messageTransmitterChain (assembled CCTP per-chain Ponder config)", () => {
+  const localChain = () =>
+    resolveChains({ NETWORK: "local" } as NodeJS.ProcessEnv, DEPLOYMENTS)[0]!;
+
+  it("indexes MessageSent in full and MessageReceived filtered to caller = hookRouter", () => {
+    const chain = localChain();
+    const cfg = messageTransmitterChain({} as NodeJS.ProcessEnv, chain);
+    expect(cfg.address).toBe(chain.manifest.cctp.messageTransmitter);
+    expect(cfg.startBlock).toBe("latest"); // forward-only default, not deployBlock
+    // Both events must be listed — the filter is an allowlist, so omitting MessageSent would
+    // silently stop indexing it. MessageSent has no indexed args (unconstrained); MessageReceived
+    // is narrowed to our own deliveries via the indexed caller.
+    expect(cfg.filter).toEqual([
+      { event: "MessageSent", args: {} },
+      { event: "MessageReceived", args: { caller: "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0" } },
+    ]);
+  });
+
+  it("omits the filter entirely when the chain has no hookRouter (indexes all events)", () => {
+    const base = localChain();
+    const { hookRouter, ...rest } = base.manifest.contracts;
+    void hookRouter;
+    const chain = { ...base, manifest: { ...base.manifest, contracts: rest } };
+    const cfg = messageTransmitterChain({} as NodeJS.ProcessEnv, chain);
+    expect(cfg.filter).toBeUndefined();
+    expect(cfg.startBlock).toBe("latest");
+  });
+
+  it("carries the CCTP_START_BLOCK override into the assembled startBlock", () => {
+    const chain = localChain();
+    const cfg = messageTransmitterChain(
+      { CCTP_START_BLOCK_31337: "8000000" } as unknown as NodeJS.ProcessEnv,
+      chain,
+    );
+    expect(cfg.startBlock).toBe(8000000);
   });
 });
 
