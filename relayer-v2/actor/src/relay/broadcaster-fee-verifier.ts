@@ -9,18 +9,8 @@ import {
   WRAPPER_ABIS,
 } from "./transact-shape.js";
 import { selectorOf } from "./selectors.js";
+import type { NoteAmountExtractor } from "./wallet-seams.js";
 import { logger } from "../logger.js";
-
-/**
- * Decrypts the relayer-destined ERC20 note amounts from a (synthetic) transact call using the
- * relayer 0zk wallet's viewing key. Mirrors v1's
- * `wallet.extractFirstNoteERC20AmountMap(TXIDVersion.V2_PoseidonMerkle, chain, txRequest,
- * false, privacyPoolAddress)`. Returns tokenAddress -> amount. Injected so the pipeline is
- * testable without the Railgun SDK (SDK-backed impl in wallet/railgun-wallet.ts).
- */
-export interface NoteAmountExtractor {
-  extractFirstNoteERC20AmountMap(tx: { to: string; data: string }): Promise<Record<string, bigint>>;
-}
 
 /** Hub-scoped context, mirroring v1 BroadcasterVerifierContext: proof-bearing calls are
  * always verified against the hub pool with the hub USDC as the fee token. */

@@ -8,10 +8,12 @@ import {
   ALLOWED_SELECTORS,
   GASLESS_SELECTORS,
   SELECTOR_NAMES,
+  SELECTOR_REDEEM_AND_SHIELD,
   advertisedFeeKeys,
   selectorOf,
 } from "./selectors.js";
 import { verifyGaslessFee, type GaslessVerifierContext } from "./gasless-fee-verifier.js";
+import { verifyRedeemFee, type RedeemFeeVerifierContext } from "./redeem-fee-verifier.js";
 import { verifyBroadcasterFee, type BroadcasterVerifierContext } from "./broadcaster-fee-verifier.js";
 import type { DedupCache } from "./dedup-cache.js";
 import { logger, calldataPreview } from "../logger.js";
@@ -22,6 +24,10 @@ export interface RelayRequest {
   data: string;
   feesCacheId: string;
   idempotencyKey?: string;
+  /** Per-note blinding factor for the relayer's shielded fee note. Required on the shielded-fee-note
+   * paths (redeemAndShield, gasless shield) so the verifier can reconstruct the fee note's npk and
+   * confirm it is addressed to the relayer. Ignored on broadcaster-output paths. */
+  feeShieldRandom?: string;
 }
 
 export interface RelayResult {
@@ -46,6 +52,7 @@ export interface PrivacyRelayDeps {
   allowedTargets: Map<number, Set<string>>;
   feeCalculator: FeeCalculator;
   gaslessCtx: GaslessVerifierContext;
+  redeemCtx: RedeemFeeVerifierContext;
   broadcasterCtx: BroadcasterVerifierContext;
   submitter: RelaySubmitter;
   dedup: DedupCache;
@@ -107,11 +114,17 @@ export class PrivacyRelay {
     const advertised = advertisedFee(schedule, advertisedFeeKeys(selector));
     try {
       if (GASLESS_SELECTORS.has(selector)) {
+        // Shielded fee note (gasless): destination proven by npk-reconstruction, needs feeShieldRandom.
         verifyGaslessFee(
           this.deps.gaslessCtx,
           { chainId: req.chainId, to: req.to, data: req.data },
           advertised,
+          req.feeShieldRandom,
         );
+      } else if (selector === SELECTOR_REDEEM_AND_SHIELD) {
+        // Shielded fee note (yield withdraw, #312): fee is a shield output, not an in-proof leg, so
+        // it has its own npk-reconstruction verifier rather than the broadcaster-output path.
+        verifyRedeemFee(this.deps.redeemCtx, { data: req.data }, advertised, req.feeShieldRandom);
       } else {
         await verifyBroadcasterFee(this.deps.broadcasterCtx, req.data, advertised);
       }

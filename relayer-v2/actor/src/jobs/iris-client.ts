@@ -7,6 +7,14 @@ const MSG_NONCE_OFFSET = 12;
 const MSG_NONCE_LENGTH = 32; // bytes32 in real CCTP V2 (NOT 8-byte uint64)
 const MSG_FINALITY_EXECUTED_OFFSET = 144;
 const MSG_FINALITY_EXECUTED_LENGTH = 4;
+// BurnMessageV2 body starts at message offset 148; feeExecuted and expirationBlock are the two
+// slots Circle fills in AFTER the burn on a FAST (CCTP V2) transfer, so they must be zeroed before
+// the local-vs-Iris diff or every FAST transfer dead-letters. maxFee (abs 280) stays IN the compare —
+// it is the user-authorized ceiling bound into the proof/intent, and the chain enforces feeExecuted <= maxFee.
+const MSG_FEE_EXECUTED_OFFSET = 312; // messageBody 148 + body offset 164
+const MSG_FEE_EXECUTED_LENGTH = 32;
+const MSG_EXPIRATION_BLOCK_OFFSET = 344; // messageBody 148 + body offset 196
+const MSG_EXPIRATION_BLOCK_LENGTH = 32;
 export const DEFAULT_IRIS_FETCH_TIMEOUT_MS = 10_000;
 
 /** Mock-mode attestation: empty bytes — the mock MessageTransmitter skips verification (v1). */
@@ -43,23 +51,28 @@ function zeroHexRange(hex: string, startByte: number, lenBytes: number): string 
   );
 }
 
-/** True when two MessageV2 byte strings are identical outside the nonce and
- * finalityThresholdExecuted slots (which Iris fills in). Ported verbatim from v1. */
+/** True when two MessageV2 byte strings are identical outside the slots Circle legitimately fills in
+ * after the burn: nonce, finalityThresholdExecuted, and (on FAST transfers) feeExecuted +
+ * expirationBlock. maxFee is deliberately left IN the comparison (see the offset constants). */
 export function irisMessageMatches(localHex: string, irisHex: string): boolean {
   const a = (localHex.startsWith("0x") ? localHex.slice(2) : localHex).toLowerCase();
   const b = (irisHex.startsWith("0x") ? irisHex.slice(2) : irisHex).toLowerCase();
   if (a.length !== b.length) return false;
-  const na = zeroHexRange(
-    zeroHexRange(a, MSG_NONCE_OFFSET, MSG_NONCE_LENGTH),
-    MSG_FINALITY_EXECUTED_OFFSET,
-    MSG_FINALITY_EXECUTED_LENGTH,
-  );
-  const nb = zeroHexRange(
-    zeroHexRange(b, MSG_NONCE_OFFSET, MSG_NONCE_LENGTH),
-    MSG_FINALITY_EXECUTED_OFFSET,
-    MSG_FINALITY_EXECUTED_LENGTH,
-  );
-  return na === nb;
+  const mask = (hex: string): string =>
+    zeroHexRange(
+      zeroHexRange(
+        zeroHexRange(
+          zeroHexRange(hex, MSG_NONCE_OFFSET, MSG_NONCE_LENGTH),
+          MSG_FINALITY_EXECUTED_OFFSET,
+          MSG_FINALITY_EXECUTED_LENGTH,
+        ),
+        MSG_FEE_EXECUTED_OFFSET,
+        MSG_FEE_EXECUTED_LENGTH,
+      ),
+      MSG_EXPIRATION_BLOCK_OFFSET,
+      MSG_EXPIRATION_BLOCK_LENGTH,
+    );
+  return mask(a) === mask(b);
 }
 
 export class MockAttestationClient implements AttestationClient {

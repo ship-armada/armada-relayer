@@ -84,6 +84,7 @@ async function main(): Promise<void> {
       feeTtlSeconds: config.feeTtlSeconds,
       feeVarianceBufferBps: config.feeVarianceBufferBps,
       profitMarginBps: config.profitMarginBps,
+      shieldFeeBps: config.shieldFeeBps,
       broadcasterRailgunAddress: railgun.railgunAddress,
       onRegenerate: (chainId) => {
         void wallet
@@ -130,7 +131,11 @@ async function main(): Promise<void> {
   const relay = new PrivacyRelay({
     allowedTargets,
     feeCalculator,
-    gaslessCtx: { wrappersByChain },
+    // The same railgun wallet service backs the npk-reconstruction seam AND the published
+    // broadcasterRailgunAddress (feeCalculator, above) — one identity, so honest shielded fee notes
+    // verify against the key that was advertised (fee-destination invariant).
+    gaslessCtx: { wrappersByChain, deriver: railgun },
+    redeemCtx: { deriver: railgun },
     broadcasterCtx: {
       extractor: railgun,
       privacyPoolAddress: hubDeployment.manifest.contracts.privacyPool!,

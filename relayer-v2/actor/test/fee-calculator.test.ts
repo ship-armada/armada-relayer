@@ -5,6 +5,7 @@ import {
   FeeCalculator,
   GAS_ESTIMATES,
   computeFeeUsdcRaw,
+  grossUpForShieldFee,
   advertisedFee,
   FEE_FLOOR_USDC_RAW,
   type FeeSchedule,
@@ -48,6 +49,7 @@ function makeCalculator(nowRef: { t: number }) {
       feeTtlSeconds: 300,
       feeVarianceBufferBps: 2000,
       profitMarginBps: 1000,
+      shieldFeeBps: 0, // neutral: gross-up is a no-op; exercised separately below
       broadcasterRailgunAddress: "0zk1test",
       now: () => nowRef.t,
     },
@@ -123,5 +125,44 @@ describe("advertisedFee", () => {
       fees: { transfer: "500", unshield: "300" },
     } as unknown as FeeSchedule;
     expect(advertisedFee(schedule, ["transfer", "unshield"])).toBe(300n);
+  });
+});
+
+describe("grossUpForShieldFee (shield-tier gross-up for the on-chain shield fee)", () => {
+  it("is a no-op at 0 bps and on a zero fee", () => {
+    expect(grossUpForShieldFee(1000n, 0)).toBe(1000n);
+    expect(grossUpForShieldFee(0n, 50)).toBe(0n);
+  });
+
+  it("ceil-grosses so the relayer nets >= target after the (floored) shield fee", () => {
+    const gross = grossUpForShieldFee(1000n, 50);
+    expect(gross).toBeGreaterThan(1000n);
+    const net = gross - (gross * 50n) / 10_000n; // on-chain shield fee is floored
+    expect(net).toBeGreaterThanOrEqual(1000n);
+  });
+
+  it("schedule grosses up shield/shieldXchain only, leaving Phase-A tiers verbatim", async () => {
+    const now = { t: 1_750_000_000_000 };
+    const calc = new FeeCalculator(
+      { gasPriceWei: async () => 10n * GWEI },
+      { current: () => ({ price: 3000 }), refresh: async () => ({}) },
+      {
+        feeTtlSeconds: 300,
+        feeVarianceBufferBps: 2000,
+        profitMarginBps: 0,
+        shieldFeeBps: 50,
+        broadcasterRailgunAddress: "0zk1test",
+        now: () => now.t,
+      },
+    );
+    const s = await calc.getSchedule(31337);
+    const raw = (k: keyof FeeSchedule["fees"]) => computeFeeUsdcRaw(GAS_ESTIMATES[k], 10n * GWEI, 3000, 0);
+    // Phase-A tiers are SNARK broadcaster outputs (no shield fee) → verbatim.
+    expect(BigInt(s.fees.transfer)).toBe(raw("transfer"));
+    expect(BigInt(s.fees.crossChainUnshield)).toBe(raw("crossChainUnshield"));
+    // Gasless shield tiers are shielded fee notes → grossed up.
+    expect(BigInt(s.fees.shield)).toBe(grossUpForShieldFee(raw("shield"), 50));
+    expect(BigInt(s.fees.shieldXchain)).toBe(grossUpForShieldFee(raw("shieldXchain"), 50));
+    expect(BigInt(s.fees.shield)).toBeGreaterThan(raw("shield"));
   });
 });

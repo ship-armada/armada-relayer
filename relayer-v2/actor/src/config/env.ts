@@ -63,6 +63,7 @@ export interface ActorConfig {
   feeTtlSeconds: number;
   feeVarianceBufferBps: number;
   profitMarginBps: number; // v1 hardcodes 0; env FEE_PROFIT_MARGIN_BPS is a v2 knob
+  shieldFeeBps: number; // pool base shield fee (ArmadaFeeModule.baseArmadaTakeBps); grosses up shield tiers
   // price source (§8.8)
   ethUsdPriceStatic: number;
   ethUsdFeedAddress: string | null;
@@ -177,6 +178,7 @@ export function buildConfig(env: NodeJS.ProcessEnv, deploymentsRoot: string): Ac
     feeTtlSeconds: num(env, "FEE_TTL_SECONDS", 300, 1),
     feeVarianceBufferBps: num(env, "FEE_VARIANCE_BUFFER_BPS", 2000, 0),
     profitMarginBps: num(env, "FEE_PROFIT_MARGIN_BPS", 0, 0), // v1 default: 0
+    shieldFeeBps: num(env, "RELAYER_SHIELD_FEE_BPS", 50, 0), // = ArmadaFeeModule.baseArmadaTakeBps
     ethUsdPriceStatic,
     ethUsdFeedAddress,
     ethUsdMaxStalenessMs: num(env, "ETH_USD_MAX_STALENESS_MS", 5_400_000, 60_000),
