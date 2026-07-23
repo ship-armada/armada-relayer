@@ -40,7 +40,7 @@ export interface Manifest {
   chainId: number;
   domain: number;
   contracts: Record<string, string | undefined>;
-  cctp: { tokenMessenger: string; messageTransmitter: string; usdc: string };
+  cctp: { tokenMessenger: string; messageTransmitter: string; usdc: string; startBlock?: number };
   hub?: { domain: number; privacyPool: string };
   deployBlock?: number;
 }
@@ -171,6 +171,46 @@ export function resolveChains(env: NodeJS.ProcessEnv, deploymentsRoot: string): 
     }
     return { ...chain, rpcUrls, manifest };
   });
+}
+
+/**
+ * Start block for MessageTransmitter (CCTP) indexing. Unlike the privacy pools — which must
+ * index from deployBlock so quick-sync can rebuild the merkletree from genesis — CCTP messages
+ * are only relayed while in flight, so historical CCTP logs serve nothing and backfilling
+ * Circle's shared transmitter from deploy is pure RPC waste. Defaults to "latest" (chain head at
+ * first sync) so forgetting to configure a block is cheap-and-correct rather than a full-history
+ * firehose. Precedence: CCTP_START_BLOCK_<chainId> env override (absolute block or "latest") >
+ * manifest cctp.startBlock > "latest". Set an explicit recent block on a fresh/cold deploy to
+ * sweep transfers that were burned but not yet delivered when the watcher first syncs.
+ */
+export function cctpStartBlock(env: NodeJS.ProcessEnv, chain: ResolvedChain): number | "latest" {
+  // Compose passes unset vars as empty strings (`${VAR:-}`), so treat "" as unset like resolveSource.
+  const raw = env[`CCTP_START_BLOCK_${chain.chainId}`];
+  if (raw !== undefined && raw !== "") {
+    if (raw === "latest") return "latest";
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0) {
+      throw new Error(
+        `CCTP_START_BLOCK_${chain.chainId} must be a non-negative integer or "latest", got ${JSON.stringify(raw)}`,
+      );
+    }
+    return n;
+  }
+  const fromManifest = chain.manifest.cctp.startBlock;
+  if (fromManifest !== undefined) return fromManifest;
+  return "latest";
+}
+
+/**
+ * The chain's CCTP HookRouter address (lowercased), or null if the manifest carries none.
+ * Destination relays route through this contract (actor destination-submitter calls
+ * relayWithHook), so it is the `caller` on the MessageReceived logs the actor's delivery-dedup
+ * lookahead cares about — see ponder.config's MessageReceived caller filter. A chain without a
+ * hookRouter indexes MessageReceived unfiltered.
+ */
+export function hookRouterAddress(chain: ResolvedChain): string | null {
+  const addr = chain.manifest.contracts.hookRouter;
+  return addr && /^0x[0-9a-fA-F]{40}$/.test(addr) ? addr.toLowerCase() : null;
 }
 
 export function poolAddress(chain: ResolvedChain): string {
