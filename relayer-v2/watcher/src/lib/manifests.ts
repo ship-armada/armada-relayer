@@ -213,6 +213,40 @@ export function hookRouterAddress(chain: ResolvedChain): string | null {
   return addr && /^0x[0-9a-fA-F]{40}$/.test(addr) ? addr.toLowerCase() : null;
 }
 
+/** Ponder per-chain config for the CCTP MessageTransmitter, assembled here so the exact shape is
+ * unit-testable without a chain (the §15.2 differential test is the chain-level ground-truth check).
+ * Forward-only startBlock (cctpStartBlock); when the chain has a hookRouter, a filter that indexes
+ * every MessageSent (no indexed args to narrow on) but only our own hookRouter's MessageReceived
+ * deliveries (its `caller` arg IS indexed) — third-party deliveries are backstopped by on-chain
+ * replay protection (D4). A chain without a hookRouter indexes MessageReceived unfiltered. */
+export type MessageTransmitterChainConfig = {
+  address: `0x${string}`;
+  startBlock: number | "latest";
+  filter?: Array<
+    | { event: "MessageSent"; args: Record<string, never> }
+    | { event: "MessageReceived"; args: { caller: `0x${string}` } }
+  >;
+};
+
+export function messageTransmitterChain(
+  env: NodeJS.ProcessEnv,
+  chain: ResolvedChain,
+): MessageTransmitterChainConfig {
+  const hookRouter = hookRouterAddress(chain);
+  return {
+    address: chain.manifest.cctp.messageTransmitter as `0x${string}`,
+    startBlock: cctpStartBlock(env, chain),
+    ...(hookRouter
+      ? {
+          filter: [
+            { event: "MessageSent" as const, args: {} },
+            { event: "MessageReceived" as const, args: { caller: hookRouter as `0x${string}` } },
+          ],
+        }
+      : {}),
+  };
+}
+
 export function poolAddress(chain: ResolvedChain): string {
   return chain.role === "hub"
     ? chain.manifest.contracts.privacyPool!

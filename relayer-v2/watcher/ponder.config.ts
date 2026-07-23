@@ -2,7 +2,7 @@
 // ABOUTME: chains from NETWORK env, addresses/startBlock never hardcoded, per-chain poll cadence.
 import { createConfig } from "ponder";
 import { join } from "node:path";
-import { resolveChains, cctpStartBlock, hookRouterAddress } from "./src/lib/manifests";
+import { resolveChains, messageTransmitterChain } from "./src/lib/manifests";
 import { PrivacyPoolAbi } from "./abis/PrivacyPool";
 import { PrivacyPoolClientAbi } from "./abis/PrivacyPoolClient";
 import { MessageTransmitterAbi } from "./abis/MessageTransmitter";
@@ -59,24 +59,7 @@ export default createConfig({
       // deliveries (the actor's already_delivered lookahead; third-party deliveries are backstopped
       // by on-chain replay protection, D4). Chains without a hookRouter index MessageReceived unfiltered.
       chain: Object.fromEntries(
-        resolved.map((c) => {
-          const hookRouter = hookRouterAddress(c);
-          return [
-            c.name,
-            {
-              address: c.manifest.cctp.messageTransmitter as `0x${string}`,
-              startBlock: cctpStartBlock(process.env, c),
-              ...(hookRouter
-                ? {
-                    filter: [
-                      { event: "MessageSent" as const, args: {} },
-                      { event: "MessageReceived" as const, args: { caller: hookRouter as `0x${string}` } },
-                    ],
-                  }
-                : {}),
-            },
-          ];
-        }),
+        resolved.map((c) => [c.name, messageTransmitterChain(process.env, c)]),
       ),
     },
   },

@@ -11,6 +11,7 @@ import {
   resolveSource,
   cctpStartBlock,
   hookRouterAddress,
+  messageTransmitterChain,
 } from "../src/lib/manifests";
 import {
   parseRangeParams,
@@ -253,6 +254,44 @@ describe("hookRouterAddress (MessageReceived caller filter source)", () => {
     void hookRouter;
     const noRouter = { ...chain, manifest: { ...chain.manifest, contracts: rest } };
     expect(hookRouterAddress(noRouter)).toBeNull();
+  });
+});
+
+describe("messageTransmitterChain (assembled CCTP per-chain Ponder config)", () => {
+  const localChain = () =>
+    resolveChains({ NETWORK: "local" } as NodeJS.ProcessEnv, DEPLOYMENTS)[0]!;
+
+  it("indexes MessageSent in full and MessageReceived filtered to caller = hookRouter", () => {
+    const chain = localChain();
+    const cfg = messageTransmitterChain({} as NodeJS.ProcessEnv, chain);
+    expect(cfg.address).toBe(chain.manifest.cctp.messageTransmitter);
+    expect(cfg.startBlock).toBe("latest"); // forward-only default, not deployBlock
+    // Both events must be listed — the filter is an allowlist, so omitting MessageSent would
+    // silently stop indexing it. MessageSent has no indexed args (unconstrained); MessageReceived
+    // is narrowed to our own deliveries via the indexed caller.
+    expect(cfg.filter).toEqual([
+      { event: "MessageSent", args: {} },
+      { event: "MessageReceived", args: { caller: "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0" } },
+    ]);
+  });
+
+  it("omits the filter entirely when the chain has no hookRouter (indexes all events)", () => {
+    const base = localChain();
+    const { hookRouter, ...rest } = base.manifest.contracts;
+    void hookRouter;
+    const chain = { ...base, manifest: { ...base.manifest, contracts: rest } };
+    const cfg = messageTransmitterChain({} as NodeJS.ProcessEnv, chain);
+    expect(cfg.filter).toBeUndefined();
+    expect(cfg.startBlock).toBe("latest");
+  });
+
+  it("carries the CCTP_START_BLOCK override into the assembled startBlock", () => {
+    const chain = localChain();
+    const cfg = messageTransmitterChain(
+      { CCTP_START_BLOCK_31337: "8000000" } as unknown as NodeJS.ProcessEnv,
+      chain,
+    );
+    expect(cfg.startBlock).toBe(8000000);
   });
 });
 
