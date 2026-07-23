@@ -1,5 +1,5 @@
 // ABOUTME: Unit tests for the smaller actor components: rate limiter (§6.3), nonce coordinator
-// ABOUTME: (§6.5), selectors/gasless decoding (v1 signatures), health/counters, iris client (v1 port).
+// ABOUTME: (§6.5), selectors (current wrapper signatures), health/counters, iris client (v1 port).
 import { describe, it, expect } from "vitest";
 import { TokenBucketLimiter } from "../src/http/rate-limiter.js";
 import { NonceCoordinator } from "../src/wallet/nonce-coordinator.js";
@@ -11,9 +11,7 @@ import {
   SELECTOR_ATOMIC_XCHAIN_UNSHIELD,
   SELECTOR_GASLESS_SHIELD,
   SELECTOR_GASLESS_XCHAIN_SHIELD,
-  decodeGaslessFee,
   advertisedFeeKeys,
-  selectorOf,
 } from "../src/relay/selectors.js";
 import {
   classifyChain,
@@ -30,7 +28,6 @@ import {
   isPlausibleHexBytes,
 } from "../src/jobs/iris-client.js";
 import { assertValidMnemonic } from "../src/wallet/railgun-wallet.js";
-import { Interface } from "ethers";
 import { buildCctpMessage } from "./helpers.js";
 
 describe("TokenBucketLimiter (§6.3)", () => {
@@ -98,61 +95,21 @@ describe("NonceCoordinator (§6.5)", () => {
   });
 });
 
-describe("selectors (v1 transact-shape + gasless-fee-verifier)", () => {
-  it("pins the four spec-given selectors verbatim", () => {
+describe("selectors (current transact-shape + gasless wrapper signatures)", () => {
+  it("pins the four transact-family selectors to their on-chain values", () => {
     expect(SELECTOR_TRANSACT).toBe("0xd8ae136a");
     expect(SELECTOR_LEND_AND_SHIELD).toBe("0xf2987ad1");
-    expect(SELECTOR_REDEEM_AND_SHIELD).toBe("0x0793b70e");
-    expect(SELECTOR_ATOMIC_XCHAIN_UNSHIELD).toBe("0xe484d408");
+    // redeemAndShield gained relayer fee-shield args (#312); atomicCrossChainUnshield dropped
+    // destinationCaller (#64) and gained a trailing uniqueNonce (#287).
+    expect(SELECTOR_REDEEM_AND_SHIELD).toBe("0x7e220759");
+    expect(SELECTOR_ATOMIC_XCHAIN_UNSHIELD).toBe("0x2bcba06a");
     expect(ALLOWED_SELECTORS.size).toBe(6);
   });
 
-  it("derives the gasless selectors from the real wrapper signatures", () => {
-    // cast sig of GaslessShieldWrapper.gaslessShield / GaslessShieldWrapperClient.gaslessCrossChainShield
-    expect(SELECTOR_GASLESS_SHIELD).toBe("0x1de05794");
-    expect(SELECTOR_GASLESS_XCHAIN_SHIELD).toBe("0xa608b736");
-  });
-
-  it("decodes the gaslessShield plaintext fee (flat arg index 2)", () => {
-    const iface = new Interface([
-      "function gaslessShield(address user, uint256 totalAmount, uint256 fee, uint256 deadline, uint8 v, bytes32 r, bytes32 s, ((bytes32,(uint8,address,uint256),uint120),(bytes32[3],bytes32)) shieldRequest, address integrator)",
-    ]);
-    const data = iface.encodeFunctionData("gaslessShield", [
-      "0x" + "11".repeat(20),
-      1000n,
-      12345n,
-      9999n,
-      27,
-      "0x" + "01".repeat(32),
-      "0x" + "02".repeat(32),
-      [
-        ["0x" + "03".repeat(32), [0, "0x" + "04".repeat(20), 0n], 500n],
-        [["0x" + "05".repeat(32), "0x" + "06".repeat(32), "0x" + "07".repeat(32)], "0x" + "08".repeat(32)],
-      ],
-      "0x" + "09".repeat(20),
-    ]);
-    expect(selectorOf(data)).toBe(SELECTOR_GASLESS_SHIELD);
-    expect(decodeGaslessFee(SELECTOR_GASLESS_SHIELD, data)).toBe(12345n);
-  });
-
-  it("decodes the gaslessCrossChainShield fee (permitInput[2])", () => {
-    const iface = new Interface([
-      "function gaslessCrossChainShield((address user, uint256 totalAmount, uint256 fee, uint256 deadline, uint8 v, bytes32 r, bytes32 s) permitInput, (uint256 maxFee, uint32 minFinalityThreshold, bytes32 npk, bytes32[3] encryptedBundle, bytes32 shieldKey, bytes32 destinationCaller, address integrator) dest)",
-    ]);
-    const data = iface.encodeFunctionData("gaslessCrossChainShield", [
-      ["0x" + "11".repeat(20), 1000n, 999n, 8888n, 27, "0x" + "01".repeat(32), "0x" + "02".repeat(32)],
-      [
-        50n,
-        1000,
-        "0x" + "03".repeat(32),
-        ["0x" + "04".repeat(32), "0x" + "05".repeat(32), "0x" + "06".repeat(32)],
-        "0x" + "07".repeat(32),
-        "0x" + "00".repeat(32),
-        "0x" + "09".repeat(20),
-      ],
-    ]);
-    expect(selectorOf(data)).toBe(SELECTOR_GASLESS_XCHAIN_SHIELD);
-    expect(decodeGaslessFee(SELECTOR_GASLESS_XCHAIN_SHIELD, data)).toBe(999n);
+  it("derives the gasless selectors from the permissionless wrapper signatures", () => {
+    // gaslessShield (hub) / gaslessCrossChainShield (client), now (params, intentSig, …notes).
+    expect(SELECTOR_GASLESS_SHIELD).toBe("0x6e53fbcb");
+    expect(SELECTOR_GASLESS_XCHAIN_SHIELD).toBe("0xd34e1968");
   });
 
   it("advertised fee mapping: transact quotes min(transfer, unshield); rest per v1", () => {
@@ -302,12 +259,26 @@ describe("attestation clients (v1 IrisApiClient port)", () => {
     expect(await client.fetch(QUERY)).toEqual({ status: "complete", attestation, message: MESSAGE });
   });
 
-  it("irisMessageMatches ignores exactly the nonce and finality slots (v1)", () => {
+  it("irisMessageMatches ignores the nonce and finality slots", () => {
     const local = buildCctpMessage();
     const withNonce = buildCctpMessage({ nonce: "0x" + "ee".repeat(32) });
     expect(irisMessageMatches(local, withNonce)).toBe(true);
     expect(irisMessageMatches(local, buildCctpMessage({ destinationDomain: 99 }))).toBe(false);
     expect(irisMessageMatches(local, local + "ff")).toBe(false); // length must match
+  });
+
+  it("irisMessageMatches whitelists the FAST-filled feeExecuted + expirationBlock, keeps maxFee IN", () => {
+    // Burn observes feeExecuted/expirationBlock = 0; Circle fills them during FAST attestation.
+    const local = buildCctpMessage({ maxFee: "0x" + "00".repeat(31) + "64" });
+    const fastFilled = buildCctpMessage({
+      maxFee: "0x" + "00".repeat(31) + "64",
+      feeExecuted: "0x" + "00".repeat(31) + "0a",
+      expirationBlock: "0x" + "00".repeat(28) + "0badf00d",
+    });
+    expect(irisMessageMatches(local, fastFilled)).toBe(true);
+    // maxFee is user-authorized and stays in the comparison — a changed maxFee is still a mismatch.
+    const tamperedMaxFee = buildCctpMessage({ maxFee: "0x" + "00".repeat(31) + "ff" });
+    expect(irisMessageMatches(local, tamperedMaxFee)).toBe(false);
   });
 
   it("isPlausibleHexBytes validates hex-ness and minimum size", () => {

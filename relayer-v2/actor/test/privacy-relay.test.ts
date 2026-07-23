@@ -1,7 +1,7 @@
 // ABOUTME: Pipeline tests for POST /relay (§6.2, v1 semantics): every error code in order,
 // ABOUTME: gasless + broadcaster fee paths, wrapper→synthetic-transact normalization, dedup.
 import { describe, it, expect } from "vitest";
-import { Interface, parseUnits } from "ethers";
+import { Interface, parseUnits, toBeHex } from "ethers";
 import { FeeCalculator } from "../src/relay/fee-calculator.js";
 import { PrivacyRelay, type RelaySubmitter } from "../src/relay/privacy-relay.js";
 import { DedupCache } from "../src/relay/dedup-cache.js";
@@ -17,24 +17,31 @@ const WRAPPER = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
 const USDC = "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9";
 const GWEI = 1_000_000_000n;
 
+// Permissionless gaslessShield: (params, intentSig, shieldRequests[]). The relayer fee is one of the
+// shield notes, addressed to the relayer's 0zk — the verifier finds it by matching preimage.npk against
+// the npk reconstructed from feeShieldRandom. FEE_NPK is the npk the (stubbed) deriver reconstructs.
 const GASLESS_IFACE = new Interface([
-  "function gaslessShield(address user, uint256 totalAmount, uint256 fee, uint256 deadline, uint8 v, bytes32 r, bytes32 s, ((bytes32,(uint8,address,uint256),uint120),(bytes32[3],bytes32)) shieldRequest, address integrator)",
+  "function gaslessShield((address user,uint256 deadline,uint256 nonce,address integrator,uint8 permitV,bytes32 permitR,bytes32 permitS) params, bytes intentSig, ((bytes32 npk,(uint8 tokenType,address tokenAddress,uint256 tokenSubID) token,uint120 value) preimage,(bytes32[3] encryptedBundle,bytes32 shieldKey) ciphertext)[] shieldRequests)",
 ]);
 
-function gaslessCalldata(fee: bigint): string {
+const FEE_NPK = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdefn;
+const FEE_SHIELD_RANDOM = "0x" + "ab".repeat(16);
+const FEE_NPK_HEX = toBeHex(FEE_NPK, 32);
+
+/** Builds gaslessShield calldata whose relayer fee note (npk = FEE_NPK) carries `feeValue`, preceded
+ *  by an unrelated user note (different npk) so the verifier must select by npk, not position. */
+function gaslessCalldata(feeValue: bigint): string {
+  const cipher = [
+    ["0x" + "04".repeat(32), "0x" + "05".repeat(32), "0x" + "06".repeat(32)],
+    "0x" + "07".repeat(32),
+  ];
   return GASLESS_IFACE.encodeFunctionData("gaslessShield", [
-    "0x" + "11".repeat(20),
-    1000n,
-    fee,
-    9999n,
-    27,
-    "0x" + "01".repeat(32),
-    "0x" + "02".repeat(32),
+    ["0x" + "11".repeat(20), 9999n, 1n, "0x" + "09".repeat(20), 27, "0x" + "01".repeat(32), "0x" + "02".repeat(32)],
+    "0x" + "cc".repeat(65), // intentSig
     [
-      ["0x" + "03".repeat(32), [0, USDC, 0n], 500n],
-      [["0x" + "04".repeat(32), "0x" + "05".repeat(32), "0x" + "06".repeat(32)], "0x" + "07".repeat(32)],
+      [["0x" + "03".repeat(32), [0, USDC, 0n], 500n], cipher], // user note (not ours)
+      [[FEE_NPK_HEX, [0, USDC, 0n], feeValue], cipher], // relayer fee note
     ],
-    "0x" + "09".repeat(20),
   ]);
 }
 
@@ -96,6 +103,7 @@ function makeHarness(): Harness {
       feeTtlSeconds: 300,
       feeVarianceBufferBps: 2000,
       profitMarginBps: 0,
+      shieldFeeBps: 0,
       broadcasterRailgunAddress: "0zk1test",
       now: () => now.t,
     },
@@ -129,7 +137,8 @@ function makeHarness(): Harness {
       [31337, new Set([POOL.toLowerCase(), WRAPPER.toLowerCase()])],
     ]),
     feeCalculator: calc,
-    gaslessCtx: { wrappersByChain: new Map([[31337, WRAPPER]]) },
+    gaslessCtx: { wrappersByChain: new Map([[31337, WRAPPER]]), deriver: { deriveFeeNoteNpk: () => FEE_NPK } },
+    redeemCtx: { deriver: { deriveFeeNoteNpk: () => FEE_NPK } },
     broadcasterCtx: {
       extractor: {
         extractFirstNoteERC20AmountMap: async () => {
@@ -164,8 +173,8 @@ describe("wrapper → synthetic transact normalization (v1 transact-shape port)"
       TX_STRUCT,
       6,
       "0x" + "11".repeat(20),
-      "0x" + "00".repeat(32),
-      100n,
+      100n, // maxFee
+      "0x" + "de".repeat(32), // uniqueNonce (#287)
     ]);
     const normalised = normaliseRequestToVanillaTransact(data, POOL);
     expect(normalised.to).toBe(POOL);
@@ -300,6 +309,7 @@ describe("PrivacyRelay pipeline (§6.2, order preserved)", () => {
         to: WRAPPER,
         data: gaslessCalldata(1n),
         feesCacheId: schedule.cacheId,
+        feeShieldRandom: FEE_SHIELD_RANDOM,
       }),
       "FEE_INSUFFICIENT",
     );
@@ -308,6 +318,7 @@ describe("PrivacyRelay pipeline (§6.2, order preserved)", () => {
       to: WRAPPER,
       data: gaslessCalldata(10n ** 9n),
       feesCacheId: schedule.cacheId,
+      feeShieldRandom: FEE_SHIELD_RANDOM,
     });
     expect(ok.status).toBe("pending");
   });
@@ -383,6 +394,7 @@ describe("PrivacyRelay pipeline (§6.2, order preserved)", () => {
         to: WRAPPER, // different (to, data) so the dedup cache doesn't fire first
         data: gaslessCalldata(10n ** 9n),
         feesCacheId: schedule.cacheId,
+        feeShieldRandom: FEE_SHIELD_RANDOM,
       }),
       "SUBMISSION_FAILED",
     );

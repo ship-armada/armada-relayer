@@ -1,6 +1,6 @@
-// ABOUTME: Allowed calldata selectors (§6.2 step 4) and gasless fee decoding — signatures
-// ABOUTME: reconciled against contracts/GaslessShieldWrapper*.sol and v1 gasless-fee-verifier.ts.
-import { Interface, dataSlice, id as ethersId } from "ethers";
+// ABOUTME: Allowed calldata selectors (§6.2 step 4) + the advertised-fee map. Selectors are derived
+// ABOUTME: from the canonical signatures; gasless calldata decoding lives in gasless-fee-verifier.ts.
+import { dataSlice, id as ethersId } from "ethers";
 import {
   TRANSACT_SELECTOR,
   LEND_AND_SHIELD_SELECTOR,
@@ -13,24 +13,22 @@ export const SELECTOR_LEND_AND_SHIELD = LEND_AND_SHIELD_SELECTOR;
 export const SELECTOR_REDEEM_AND_SHIELD = REDEEM_AND_SHIELD_SELECTOR;
 export const SELECTOR_ATOMIC_XCHAIN_UNSHIELD = ATOMIC_CROSS_CHAIN_UNSHIELD_SELECTOR;
 
-// Selectors derived from the canonical signatures exactly as v1 does
-// (relayer/modules/gasless-fee-verifier.ts). gaslessShield lives on the hub
-// GaslessShieldWrapper; gaslessCrossChainShield on the client GaslessShieldWrapperClient.
+// Gasless selectors derived from the permissionless (Phase C) wrapper signatures: both wrappers now
+// take `(params, intentSig, …shielded notes)` — the relayer fee is a shielded note addressed to the
+// relayer's 0zk, not a public-USDC transferFrom. gaslessShield lives on the hub GaslessShieldWrapper;
+// gaslessCrossChainShield on the client GaslessShieldWrapperClient. Decode + npk-matching against
+// these shapes lives in gasless-fee-verifier.ts.
 export const SELECTOR_GASLESS_SHIELD = ethersId(
-  "gaslessShield(address,uint256,uint256,uint256,uint8,bytes32,bytes32,((bytes32,(uint8,address,uint256),uint120),(bytes32[3],bytes32)),address)",
-).slice(0, 10); // 0x1de05794
+  "gaslessShield((address,uint256,uint256,address,uint8,bytes32,bytes32),bytes,((bytes32,(uint8,address,uint256),uint120),(bytes32[3],bytes32))[])",
+).slice(0, 10); // 0x6e53fbcb
 
 export const SELECTOR_GASLESS_XCHAIN_SHIELD = ethersId(
-  "gaslessCrossChainShield((address,uint256,uint256,uint256,uint8,bytes32,bytes32),(uint256,uint32,bytes32,bytes32[3],bytes32,bytes32,address))",
-).slice(0, 10); // 0xa608b736
+  "gaslessCrossChainShield((address,uint256,uint256,uint256,uint32,uint8,bytes32,bytes32),bytes,(bytes32,uint120,bytes32[3],bytes32,address),(bytes32,uint120,bytes32[3],bytes32,address))",
+).slice(0, 10); // 0xd34e1968
 
-// ABI fragments ported from v1 gasless-fee-verifier.ts:50-56 (match the Solidity structs in
-// GaslessShieldWrapper.sol / GaslessShieldWrapperClient.sol).
-const GASLESS_IFACE = new Interface([
-  "function gaslessShield(address user, uint256 totalAmount, uint256 fee, uint256 deadline, uint8 v, bytes32 r, bytes32 s, ((bytes32,(uint8,address,uint256),uint120),(bytes32[3],bytes32)) shieldRequest, address integrator)",
-  "function gaslessCrossChainShield((address user, uint256 totalAmount, uint256 fee, uint256 deadline, uint8 v, bytes32 r, bytes32 s) permitInput, (uint256 maxFee, uint32 minFinalityThreshold, bytes32 npk, bytes32[3] encryptedBundle, bytes32 shieldKey, bytes32 destinationCaller, address integrator) dest)",
-]);
-
+/** Proof-bearing selectors carry a Railgun Transaction. `redeemAndShield` is proof-bearing (and
+ * allow-listed) but its fee is verified by npk-reconstruction, not the broadcaster-output path — the
+ * /relay pipeline routes it explicitly (see privacy-relay.ts). */
 export const PROOF_BEARING_SELECTORS: ReadonlySet<string> = new Set([
   SELECTOR_TRANSACT,
   SELECTOR_LEND_AND_SHIELD,
@@ -91,20 +89,4 @@ export function advertisedFeeKeys(selector: string): FeeKey[] {
     default:
       throw new Error(`No advertised-fee mapping for selector ${selector}.`);
   }
-}
-
-/** Decodes the plaintext gasless fee: gaslessShield arg index 2; gaslessCrossChainShield
- * permitInput[2] (v1 gasless-fee-verifier.ts:122-136). Throws on any decode failure. */
-export function decodeGaslessFee(selector: string, data: string): bigint {
-  if (selector === SELECTOR_GASLESS_SHIELD) {
-    const decoded = GASLESS_IFACE.decodeFunctionData("gaslessShield", data);
-    // Args: [user, totalAmount, fee, deadline, v, r, s, shieldRequest, integrator]
-    return BigInt(decoded[2]);
-  }
-  if (selector === SELECTOR_GASLESS_XCHAIN_SHIELD) {
-    const decoded = GASLESS_IFACE.decodeFunctionData("gaslessCrossChainShield", data);
-    const permitInput = decoded[0];
-    return BigInt(permitInput[2]);
-  }
-  throw new Error(`not a gasless selector: ${selector}`);
 }

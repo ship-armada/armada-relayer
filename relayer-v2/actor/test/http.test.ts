@@ -76,6 +76,7 @@ function makeApp(overrides: Partial<HttpDeps> = {}): Harness {
       feeTtlSeconds: 300,
       feeVarianceBufferBps: 2000,
       profitMarginBps: 0,
+      shieldFeeBps: 0,
       broadcasterRailgunAddress: "0zk1test",
       now: () => now.t,
     },
@@ -90,7 +91,8 @@ function makeApp(overrides: Partial<HttpDeps> = {}): Harness {
       [31337, new Set([POOL_ADDRESS.toLowerCase(), WRAPPER.toLowerCase()])],
     ]),
     feeCalculator: calc,
-    gaslessCtx: { wrappersByChain: new Map([[31337, WRAPPER]]) },
+    gaslessCtx: { wrappersByChain: new Map([[31337, WRAPPER]]), deriver: { deriveFeeNoteNpk: () => 0n } },
+    redeemCtx: { deriver: { deriveFeeNoteNpk: () => 0n } },
     broadcasterCtx: {
       extractor: {
         extractFirstNoteERC20AmountMap: async () => ({
@@ -219,19 +221,20 @@ describe("POST /relay", () => {
     await request(h.app)
       .post("/relay")
       .send({ chainId: 31337, to: POOL_ADDRESS, data: "0x00", feesCacheId: "stale" });
-    // gasless below advertised (step 5) — feeVerifierRejects.FEE_INSUFFICIENT
+    // gasless below advertised (step 5) — feeVerifierRejects.FEE_INSUFFICIENT. The fee note is addressed
+    // to npk 0 (the deriver stub reconstructs 0n) with value 1, below the advertised shield fee.
     const GASLESS_IFACE = new Interface([
-      "function gaslessShield(address user, uint256 totalAmount, uint256 fee, uint256 deadline, uint8 v, bytes32 r, bytes32 s, ((bytes32,(uint8,address,uint256),uint120),(bytes32[3],bytes32)) shieldRequest, address integrator)",
+      "function gaslessShield((address user,uint256 deadline,uint256 nonce,address integrator,uint8 permitV,bytes32 permitR,bytes32 permitS) params, bytes intentSig, ((bytes32 npk,(uint8 tokenType,address tokenAddress,uint256 tokenSubID) token,uint120 value) preimage,(bytes32[3] encryptedBundle,bytes32 shieldKey) ciphertext)[] shieldRequests)",
     ]);
+    const cipher = [["0x" + "04".repeat(32), "0x" + "05".repeat(32), "0x" + "06".repeat(32)], "0x" + "07".repeat(32)];
     const lowFee = GASLESS_IFACE.encodeFunctionData("gaslessShield", [
-      "0x" + "11".repeat(20), 1000n, 1n, 9999n, 27, "0x" + "01".repeat(32), "0x" + "02".repeat(32),
-      [["0x" + "03".repeat(32), [0, USDC, 0n], 500n],
-       [["0x" + "04".repeat(32), "0x" + "05".repeat(32), "0x" + "06".repeat(32)], "0x" + "07".repeat(32)]],
-      "0x" + "00".repeat(20),
+      ["0x" + "11".repeat(20), 9999n, 1n, "0x" + "09".repeat(20), 27, "0x" + "01".repeat(32), "0x" + "02".repeat(32)],
+      "0x" + "cc".repeat(65),
+      [[["0x" + "00".repeat(32), [0, USDC, 0n], 1n], cipher]], // fee note to npk 0, value 1
     ]);
     await request(h.app)
       .post("/relay")
-      .send({ chainId: 31337, to: WRAPPER, data: lowFee, feesCacheId: cacheId });
+      .send({ chainId: 31337, to: WRAPPER, data: lowFee, feesCacheId: cacheId, feeShieldRandom: "0x" + "ab".repeat(16) });
     expect(h.counters.snapshot()).toEqual({ "feeVerifierRejects.FEE_INSUFFICIENT": 1 });
   });
 

@@ -11,6 +11,9 @@ export interface MessageParams {
   destinationCaller?: string; // bytes32
   bodyVersion?: number;
   mintRecipient?: string; // bytes32
+  maxFee?: string; // bytes32 — user-authorized ceiling; stays IN the iris comparison
+  feeExecuted?: string; // bytes32 — Circle fills post-burn on FAST; whitelisted in the iris comparison
+  expirationBlock?: string; // bytes32 — Circle fills post-burn on FAST; whitelisted in the iris comparison
   truncate?: number; // cut the message to N bytes
 }
 
@@ -30,6 +33,9 @@ export function buildCctpMessage(params: MessageParams = {}): string {
     destinationCaller = ZERO32,
     bodyVersion = 1,
     mintRecipient = zeroPadValue(POOL_ADDRESS, 32),
+    maxFee = ZERO32,
+    feeExecuted = ZERO32,
+    expirationBlock = ZERO32,
   } = params;
   const header = concat([
     u32(1), // header version
@@ -48,9 +54,9 @@ export function buildCctpMessage(params: MessageParams = {}): string {
     mintRecipient,
     ZERO32, // amount
     ZERO32, // messageSender
-    ZERO32, // maxFee
-    ZERO32, // feeExecuted
-    ZERO32, // expirationBlock
+    maxFee,
+    feeExecuted,
+    expirationBlock,
   ]);
   const message = concat([header, body]);
   if (params.truncate !== undefined) {
