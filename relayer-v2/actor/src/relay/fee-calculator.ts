@@ -53,6 +53,27 @@ export function computeFeeUsdcRaw(
   return feeWithMargin > FEE_FLOOR_USDC_RAW ? feeWithMargin : FEE_FLOOR_USDC_RAW;
 }
 
+/**
+ * Gross up a NET gas-reimbursement fee so that after the pool's shield fee is charged on the fee
+ * NOTE, the relayer still nets the target: `gross = ceil(net × 10000 / (10000 − shieldFeeBps))`.
+ *
+ * Only the gasless shield tiers (`shield` / `shieldXchain`) are paid via a shield note, so only they
+ * are grossed up — the Phase A tiers are paid as SNARK broadcaster outputs (no shield fee charged).
+ * The frontend uses the advertised (grossed) fee verbatim as the fee-note value, and the gasless
+ * verifier's `value >= advertised` check holds because gasless shields carry integrator = address(0)
+ * (deterministic base rate = shieldFeeBps).
+ */
+export function grossUpForShieldFee(net: bigint, shieldFeeBps: number): bigint {
+  const bps = BigInt(shieldFeeBps);
+  if (bps <= 0n) return net;
+  const denom = 10_000n - bps;
+  // Ceil division so the relayer nets >= target after the (floored) on-chain shield fee.
+  return (net * 10_000n + denom - 1n) / denom;
+}
+
+/** The gasless shield tiers whose advertised fee is grossed up for the on-chain shield fee. */
+const SHIELD_FEE_TIERS: ReadonlySet<keyof FeeSchedule["fees"]> = new Set(["shield", "shieldXchain"]);
+
 export interface GasPriceReader {
   /** provider.getFeeData() distilled: gasPrice, falling back to maxFeePerGas, then 1 gwei (§6.1). */
   gasPriceWei(chainId: number): Promise<bigint>;
@@ -62,6 +83,8 @@ export interface FeeCalculatorOptions {
   feeTtlSeconds: number; // default 300
   feeVarianceBufferBps: number; // default 2000
   profitMarginBps: number;
+  /** Pool base shield fee in bps (ArmadaFeeModule.baseArmadaTakeBps) — grosses up the shield tiers. */
+  shieldFeeBps: number;
   broadcasterRailgunAddress: string;
   now?: () => number;
   /** Called on every regeneration — used to refresh the wallet-balance gauge (§10.1). */
@@ -101,12 +124,11 @@ export class FeeCalculator {
     this.counter += 1;
     const fees = {} as FeeSchedule["fees"];
     for (const key of Object.keys(GAS_ESTIMATES) as (keyof FeeSchedule["fees"])[]) {
-      fees[key] = computeFeeUsdcRaw(
-        GAS_ESTIMATES[key],
-        gasPrice,
-        price,
-        this.opts.profitMarginBps,
-      ).toString();
+      const net = computeFeeUsdcRaw(GAS_ESTIMATES[key], gasPrice, price, this.opts.profitMarginBps);
+      // Gasless shield tiers are paid via a shielded fee note the pool charges its shield fee on, so
+      // gross up the gas-reimbursement target to keep the relayer whole (see grossUpForShieldFee).
+      const quoted = SHIELD_FEE_TIERS.has(key) ? grossUpForShieldFee(net, this.opts.shieldFeeBps) : net;
+      fees[key] = quoted.toString();
     }
     const schedule: FeeSchedule = {
       cacheId: `fee-${chainId}-${now}-${this.counter}`,

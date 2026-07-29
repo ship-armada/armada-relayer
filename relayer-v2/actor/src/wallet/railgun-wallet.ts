@@ -3,9 +3,9 @@
 import { mkdirSync } from "node:fs";
 import { logger } from "../logger.js";
 import type { ActorConfig } from "../config/env.js";
-import type { NoteAmountExtractor } from "../relay/broadcaster-fee-verifier.js";
+import type { NoteAmountExtractor, FeeNoteNpkDeriver } from "../relay/wallet-seams.js";
 
-export interface RailgunWalletService extends NoteAmountExtractor {
+export interface RailgunWalletService extends NoteAmountExtractor, FeeNoteNpkDeriver {
   walletId: string;
   railgunAddress: string; // 0zk address — the only loggable identifiers (§6.5)
 }
@@ -56,7 +56,7 @@ export async function bootRailgunWallet(config: ActorConfig): Promise<RailgunWal
     );
   }
 
-  const { RailgunEngine, TXIDVersion } = engineMod;
+  const { RailgunEngine, TXIDVersion, ShieldNote } = engineMod;
   const { assertArtifactExists, ChainType } = sharedModels;
   const leveldown = leveldownMod.default ?? leveldownMod;
   const { getArtifact } = artifactsMod;
@@ -141,6 +141,13 @@ export async function bootRailgunWallet(config: ActorConfig): Promise<RailgunWal
   return {
     walletId: wallet.id,
     railgunAddress,
+    // npk-reconstruction seam (redeem + gasless fee verifiers): npk = Poseidon(masterPublicKey,
+    // random). masterPublicKey is public (it's in our 0zk address); a match against an on-chain fee
+    // note's npk proves the note is addressed to us. Same wallet that derives railgunAddress above,
+    // so the published broadcaster address and the verifying key are one identity by construction.
+    deriveFeeNoteNpk(random: string): bigint {
+      return ShieldNote.getNotePublicKey(wallet.masterPublicKey, random);
+    },
     // v1 broadcaster-fee-verifier.ts:153 — decrypts the first note of each output under the
     // relayer viewing key, scoped to notes addressed to us, keyed by token address.
     async extractFirstNoteERC20AmountMap(tx: { to: string; data: string }) {

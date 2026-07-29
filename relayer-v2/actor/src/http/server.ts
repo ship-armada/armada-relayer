@@ -131,6 +131,10 @@ export function createApp(deps: HttpDeps): Express {
       res.status(400).json({ error: "Invalid idempotencyKey", code: "INVALID_DATA" });
       return;
     }
+    if (body.feeShieldRandom !== undefined && typeof body.feeShieldRandom !== "string") {
+      res.status(400).json({ error: "Invalid feeShieldRandom", code: "INVALID_DATA" });
+      return;
+    }
 
     if (body.idempotencyKey) {
       const existing = await deps.idempotency.get(body.idempotencyKey);

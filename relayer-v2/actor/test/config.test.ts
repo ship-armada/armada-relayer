@@ -204,6 +204,7 @@ describe("buildConfig", () => {
     expect(config.feeTtlSeconds).toBe(300);
     expect(config.feeVarianceBufferBps).toBe(2000);
     expect(config.profitMarginBps).toBe(0); // v1 default
+    expect(config.shieldFeeBps).toBe(50); // = ArmadaFeeModule.baseArmadaTakeBps
     expect(config.stuckTxThresholdMs).toBe(600_000);
     expect(config.maxAttestationAgeMs).toBe(3_600_000);
     expect(config.relayRatePerMin).toBe(10);
