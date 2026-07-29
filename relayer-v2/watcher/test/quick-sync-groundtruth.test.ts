@@ -7,14 +7,14 @@ import { encodeEventTopics, encodeAbiParameters, decodeEventLog } from "viem";
 // Engine (devDependency, test-only): V2Events are the exact scan-path formatters; getNoteHash the hash source.
 import { V2Events } from "@railgun-community/engine";
 import { PrivacyPoolAbi } from "../abis/PrivacyPool";
-import { initPoseidonWasm } from "../src/lib/poseidon";
+import { initPoseidonWasm } from "../src/api/lib/poseidon";
 import {
   decodeShieldCommitments,
   decodeTransactCommitments,
   decodeNullifiers,
   decodeUnshields,
   type RawLogRow,
-} from "../src/lib/quick-sync-decode";
+} from "../src/api/lib/quick-sync-decode";
 
 const TX = "0xCdEf" + "cd".repeat(30); // letters-bearing tx hash
 const USDC = "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"; // letters-bearing (checksummed)

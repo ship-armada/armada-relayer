@@ -10,7 +10,7 @@ import {
   decodeShieldCommitments,
   formatUint256,
   type RawLogRow,
-} from "../src/lib/quick-sync-decode";
+} from "../src/api/lib/quick-sync-decode";
 
 const TX = "0xabc0000000000000000000000000000000000000000000000000000000000001";
 

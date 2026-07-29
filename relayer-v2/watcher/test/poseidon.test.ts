@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 // Import the ESM artifact directly — the exact build Ponder selects via the package "module" field.
 // Bare-specifier resolution differs by runtime (Node/vitest pick the CJS build, whose init is a
 // no-op that self-loads via fs; Ponder picks this ESM build), so the fetch-based loader that
-// actually regressed is only reachable through this explicit subpath. See src/lib/poseidon.ts.
+// actually regressed is only reachable through this explicit subpath. See src/api/lib/poseidon.ts.
 import init, {
   poseidon,
 } from "@railgun-community/poseidon-hash-wasm/pkg-esm/poseidon_hash_wasm.js";

@@ -1,15 +1,15 @@
 // ABOUTME: Decodes stored raw Hub logs into the engine's AccumulatedEvents element shapes
 // ABOUTME: (spec §7.3). Phase 2: nullifiers + unshields. Byte encodings match engine 9.5.1.
 import { decodeEventLog } from "viem";
-import { PrivacyPoolAbi } from "../../abis/PrivacyPool";
+import { PrivacyPoolAbi } from "../../../abis/PrivacyPool";
 import type {
   QuickSyncNullifier,
   QuickSyncUnshieldEvent,
   QuickSyncCommitmentEvent,
   QuickSyncTransactCommitment,
   QuickSyncShieldCommitment,
-} from "../api/quick-sync";
-import { TRANSACT_COMMITMENT_V2_TYPE, SHIELD_COMMITMENT_TYPE } from "../api/quick-sync";
+} from "../quick-sync";
+import { TRANSACT_COMMITMENT_V2_TYPE, SHIELD_COMMITMENT_TYPE } from "../quick-sync";
 import { poseidonHash } from "./poseidon";
 
 /** A stored raw log row (from the `raw_event_log` table), ordered by (blockNumber, logIndex). */

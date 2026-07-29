@@ -21,7 +21,7 @@ import {
   classifyFreshness,
   worstOf,
   MAX_LIMIT,
-} from "../src/lib/api-helpers";
+} from "../src/api/lib/api-helpers";
 
 // Flat fixture manifests (local mode / monorepo e2e path — not committed at repo root).
 const DEPLOYMENTS = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "deployments");
