@@ -13,15 +13,15 @@ import {
   checkpointBlock,
   classifyFreshness,
   worstOf,
-} from "../lib/api-helpers";
+} from "./lib/api-helpers";
 import { emptyQuickSync } from "./quick-sync";
 import {
   decodeNullifiers,
   decodeUnshields,
   decodeCommitmentEvents,
   type RawLogRow,
-} from "../lib/quick-sync-decode";
-import { initPoseidonWasm } from "../lib/poseidon";
+} from "./lib/quick-sync-decode";
+import { initPoseidonWasm } from "./lib/poseidon";
 
 // Max block window served per quick-sync page (whole blocks; caller paginates by servedThroughBlock).
 // Validated at startup: a non-positive/NaN value would make windowEnd < startingBlock, breaking
