@@ -15,5 +15,12 @@ COPY relayer-v2/watcher/src ./src
 # (no secrets involved — D2).
 RUN chown -R node:node /app
 USER node
+
+# Commit the image was built from, surfaced at /v1/health and as an OCI label. Placed last so
+# it never invalidates the cached dependency/source layers above.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
+LABEL org.opencontainers.image.revision=$GIT_SHA
+
 EXPOSE 42069
 CMD ["sh", "-c", "npx ponder start --schema ${DATABASE_SCHEMA:-watcher} --views-schema ${VIEWS_SCHEMA:-indexed}"]

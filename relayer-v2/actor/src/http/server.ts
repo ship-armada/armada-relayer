@@ -11,6 +11,7 @@ import type { ChainHealthReport } from "./health.js";
 import { Counters, healthHttpStatus, rollup } from "./health.js";
 import type { ActorMetrics } from "../metrics.js";
 import { logger } from "../logger.js";
+import { deployedCommit } from "../build-info.js";
 
 export interface TxStatusResult {
   status: "pending" | "confirmed" | "failed";
@@ -226,6 +227,7 @@ export function createApp(deps: HttpDeps): Express {
         chains,
         generatedAt: now().getTime(),
         counters: deps.counters.snapshot(),
+        commit: deployedCommit(),
       });
     } catch (err) {
       logger.error({ err: (err as Error).message }, "health check failed");
@@ -234,6 +236,7 @@ export function createApp(deps: HttpDeps): Express {
         chains: [],
         generatedAt: now().getTime(),
         counters: deps.counters.snapshot(),
+        commit: deployedCommit(),
       });
     }
   });
