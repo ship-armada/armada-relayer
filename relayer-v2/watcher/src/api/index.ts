@@ -22,6 +22,7 @@ import {
   type RawLogRow,
 } from "./lib/quick-sync-decode";
 import { initPoseidonWasm } from "./lib/poseidon";
+import { deployedCommit } from "./lib/build-info";
 
 // Max block window served per quick-sync page (whole blocks; caller paginates by servedThroughBlock).
 // Validated at startup: a non-positive/NaN value would make windowEnd < startingBlock, breaking
@@ -292,7 +293,7 @@ app.get("/v1/health", async (c) => {
   );
   const status = worstOf(reports.map((r) => r.status));
   return c.json(
-    { status, chains: reports, generatedAt: new Date().toISOString() },
+    { status, chains: reports, generatedAt: new Date().toISOString(), commit: deployedCommit() },
     status === "stale" || status === "unhealthy" ? 503 : 200,
   );
 });

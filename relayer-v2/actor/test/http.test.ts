@@ -377,6 +377,20 @@ describe("GET /health (v1 RelayerHealth shape)", () => {
     expect(res.body.counters).toEqual({ "submitSuccess.transact": 1 });
   });
 
+  it("reports the deployed commit from GIT_SHA (\"unknown\" when unset)", async () => {
+    const h = makeApp();
+    const prev = process.env.GIT_SHA;
+    try {
+      process.env.GIT_SHA = "deadbeefcafe";
+      expect((await request(h.app).get("/health")).body.commit).toBe("deadbeefcafe");
+      delete process.env.GIT_SHA;
+      expect((await request(h.app).get("/health")).body.commit).toBe("unknown");
+    } finally {
+      if (prev === undefined) delete process.env.GIT_SHA;
+      else process.env.GIT_SHA = prev;
+    }
+  });
+
   it("v1 status codes: 200 healthy/degraded, 503 stale/unhealthy — same body", async () => {
     const h = makeApp();
     h.chainReports[0]!.status = "degraded";

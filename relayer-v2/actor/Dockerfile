@@ -12,5 +12,12 @@ COPY relayer-v2/actor/src ./src
 
 RUN mkdir -p /state && chown node:node /state
 USER node
+
+# Commit the image was built from, surfaced at /health and as an OCI label. Placed last so
+# it never invalidates the cached dependency/source layers above.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
+LABEL org.opencontainers.image.revision=$GIT_SHA
+
 EXPOSE 3001
 CMD ["npx", "tsx", "src/main.ts"]
