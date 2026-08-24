@@ -75,6 +75,24 @@ Testnet/mainnet manifests come from the **central registry**
 submodule at `deployments/registry`) — pick the instance with `DEPLOYMENT_INSTANCE`. Local/e2e
 uses flat files from the monorepo instead (no registry). See `deployments/README.md`.
 
+### CCTP-relay-only (lean watcher)
+
+Set `WATCHER_MODE=cctp-only` to run a lean relay node that indexes **only** the CCTP
+`MessageTransmitter` (forward-only, from chain head). It does **no** privacy-pool backfill or
+indexing and serves **no** quick-sync — so there is no genesis-to-head sweep on a fresh deploy.
+Relaying is unaffected: the actor discovers and relays CCTP messages exactly as in full mode
+(it reads CCTP data, never pool data). Trade-off: the pool read endpoints and quick-sync are
+disabled (they answer `501`), and the watcher indexes no Railgun commitment/nullifier/xchain
+history.
+
+```bash
+WATCHER_MODE=cctp-only npm run relayer-v2:sepolia
+```
+
+Switching an existing deployment into (or out of) `cctp-only` changes the watcher's indexed
+contract set, so Ponder treats it as a fresh app and re-indexes from the CCTP start block — expected,
+since cctp-only carries no pool history to preserve.
+
 ## Env reference
 
 | Variable | Where | Default | Notes |
@@ -109,6 +127,7 @@ uses flat files from the monorepo instead (no registry). See `deployments/README
 | `INDEXED_SCHEMA` | actor | `indexed` | watcher's published views schema |
 | `DATABASE_SCHEMA` / `VIEWS_SCHEMA` | watcher | `watcher` / `indexed` | Ponder schemas (§5) |
 | `POLLING_INTERVAL_<chainId>` | watcher | §7.2 table | override poll cadence |
+| `WATCHER_MODE` | watcher | `full` | `full\|cctp-only`; cctp-only indexes only the CCTP transmitter (no pool backfill/indexing, no quick-sync) — see Run modes |
 
 Repo conventions: every committed env template is listed in `.gitignore` (`!` negations)
 AND `.githooks/pre-commit` `ALLOWED_ENV_FILES`; enable hooks with
@@ -126,6 +145,8 @@ AND `.githooks/pre-commit` `ALLOWED_ENV_FILES`; enable hooks with
   `QUICK_SYNC_MAX_BLOCK_WINDOW`, default 100k), `/v1/health` (rich §6.6 payload — Ponder's
   built-in `/health` bare-200 shadows the root path; see DEV-8), `/ready`, `/status`,
   `/metrics` (Ponder built-ins). Quick-sync has no consumer until the frontend F5 gate (§18).
+  Under `WATCHER_MODE=cctp-only`, the pool-derived reads (`/v1/commitments`, `/v1/nullifiers`,
+  `/v1/quick-sync/:chainId`) answer `501`; `/v1/logs` (CCTP addresses) and `/v1/health` stay live.
 
 ## Migration runbook (§14)
 

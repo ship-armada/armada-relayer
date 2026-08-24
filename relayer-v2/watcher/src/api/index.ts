@@ -5,7 +5,7 @@ import { db, publicClients } from "ponder:api";
 import schema from "ponder:schema";
 import { and, asc, gte, lte, eq, sql } from "ponder";
 import { join } from "node:path";
-import { resolveChains, protocolAddressAllowlist } from "../lib/manifests";
+import { resolveChains, protocolAddressAllowlist, watcherMode } from "../lib/manifests";
 import {
   parseRangeParams,
   nextCursorOf,
@@ -42,6 +42,11 @@ const deploymentsRoot =
 const chains = resolveChains(process.env, deploymentsRoot);
 const hub = chains.find((c) => c.role === "hub")!;
 const allowlist = protocolAddressAllowlist(chains);
+
+// Pool-derived reads (quick-sync + the Railgun commitment/nullifier streams) exist only when the
+// watcher indexes the pools. In cctp-only mode there is no pool data to serve, so these endpoints
+// answer 501 rather than a misleading empty page. /v1/logs and /v1/health stay live (CCTP + health).
+const poolReadsEnabled = watcherMode(process.env) === "full";
 
 const app = new Hono();
 
@@ -82,6 +87,9 @@ async function indexedThrough(chainId: number): Promise<bigint | null> {
 }
 
 app.get("/v1/commitments", async (c) => {
+  if (!poolReadsEnabled) {
+    return c.json({ error: "commitments are unavailable: watcher running in cctp-only mode" }, 501);
+  }
   const params = parseRangeParams(c.req.query());
   if ("error" in params) return c.json({ error: params.error }, 400);
   const through = await indexedThrough(hub.chainId);
@@ -111,6 +119,9 @@ app.get("/v1/commitments", async (c) => {
 });
 
 app.get("/v1/nullifiers", async (c) => {
+  if (!poolReadsEnabled) {
+    return c.json({ error: "nullifiers are unavailable: watcher running in cctp-only mode" }, 501);
+  }
   const params = parseRangeParams(c.req.query());
   if ("error" in params) return c.json({ error: params.error }, 400);
   const through = await indexedThrough(hub.chainId);
@@ -145,6 +156,9 @@ app.get("/v1/nullifiers", async (c) => {
 const HUB_POOL_ADDRESS = hub.manifest.contracts.privacyPool!.toLowerCase();
 
 app.get("/v1/quick-sync/:chainId", async (c) => {
+  if (!poolReadsEnabled) {
+    return c.json({ error: "quick-sync is unavailable: watcher running in cctp-only mode" }, 501);
+  }
   const chainId = Number(c.req.param("chainId"));
   if (!Number.isInteger(chainId) || chainId !== hub.chainId) {
     return c.json(
