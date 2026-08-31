@@ -11,11 +11,20 @@ const SCHEMA = process.env.INDEXED_SCHEMA ?? "indexed";
 if (!DEPLOYMENTS || !DB) throw new Error("set DEPLOYMENTS_DIR and DATABASE_URL");
 
 const manifest = (n) => JSON.parse(readFileSync(join(DEPLOYMENTS, n), "utf8"));
+// Chains are derived from the local topology (single source of truth) — hub + every client —
+// so this check needs no edit when the client set changes. Flat manifests are keyed by
+// manifestPrefix; roles drive the hub/client-only filters below (never a chain-name literal).
+const localTopology = JSON.parse(readFileSync(join(DEPLOYMENTS, "topology.json"), "utf8")).local;
 const chains = [
-  { name: "hub", chainId: 31337, rpc: "http://127.0.0.1:8545", m: manifest("privacy-pool-hub.json") },
-  { name: "clientA", chainId: 31338, rpc: "http://127.0.0.1:8546", m: manifest("privacy-pool-client.json") },
-  { name: "clientB", chainId: 31339, rpc: "http://127.0.0.1:8547", m: manifest("privacy-pool-clientB.json") },
-];
+  { ...localTopology.hub, role: "hub" },
+  ...localTopology.clients.map((c) => ({ ...c, role: "client" })),
+].map((c) => ({
+  name: c.name,
+  role: c.role,
+  chainId: c.chainId,
+  rpc: c.defaultRpcUrl,
+  m: manifest(`privacy-pool-${c.manifestPrefix}.json`),
+}));
 
 // event topic -> (chain-scoped) indexed table + optional address source
 const CHECKS = [
@@ -34,8 +43,8 @@ for (const chain of chains) {
   const provider = new JsonRpcProvider(chain.rpc, chain.chainId, { staticNetwork: true });
   const latest = await provider.getBlockNumber();
   for (const check of CHECKS) {
-    if (check.hubOnly && chain.name !== "hub") continue;
-    if (check.clientOnly && chain.name === "hub") continue;
+    if (check.hubOnly && chain.role !== "hub") continue;
+    if (check.clientOnly && chain.role === "hub") continue;
     const address = check.address(chain);
     if (!address) continue;
 

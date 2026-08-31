@@ -19,9 +19,11 @@ relayer-v2/actor/state/
 !relayer-v2/compose/sepolia.env
 !relayer-v2/compose/mainnet.env
 !relayer-v2/compose/secrets.env.example
+!relayer-v2/compose/endpoints.env.example
 
 # Secrets (belt and braces; already covered by *.env)
 relayer-v2/compose/secrets.env
+relayer-v2/compose/endpoints.env
 
 # OS / editor
 .DS_Store

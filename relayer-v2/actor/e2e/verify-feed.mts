@@ -1,10 +1,20 @@
 // ABOUTME: §8.8 pre-deploy check: runs the actor's real ChainlinkPriceSource against the live
 // ABOUTME: hub-chain ETH/USD feed and reports every guard's verdict. Usage: npx tsx e2e/verify-feed.mts
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { JsonRpcProvider } from "ethers";
 import { ChainlinkPriceSource, chainlinkAggregator } from "../src/relay/price-source.js";
+import { getTopology } from "../src/config/networks.js";
 
-// HUB_RPC may be a comma-separated pool (see compose/secrets.env.example); use the first URL.
-const RPC = (process.env.HUB_RPC ?? "https://ethereum-sepolia-rpc.publicnode.com")
+// The hub chain names its own RPC var in topology.json (rpcUrlEnv); resolve it for the selected
+// NETWORK (default sepolia — local has no live feed). The var may be a comma-separated pool
+// (see compose/endpoints.env.example); use the first URL.
+const network = process.env.NETWORK ?? process.env.DEPLOY_ENV ?? "sepolia";
+const deploymentsRoot =
+  process.env.DEPLOYMENTS_DIR ??
+  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "deployments");
+const hub = getTopology({ ...process.env, NETWORK: network }, deploymentsRoot).hub;
+const RPC = (process.env[hub.rpcUrlEnv] ?? hub.defaultRpcUrl ?? "https://ethereum-sepolia-rpc.publicnode.com")
   .split(",")[0]!
   .trim();
 const FEED = process.env.ETH_USD_FEED_ADDRESS ?? "0x694AA1769357215DE4FAC081bf1f309aDC325306";

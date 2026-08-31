@@ -2,8 +2,15 @@
 // ABOUTME: raw log data/topics verbatim so the read API serves Raw* envelopes without re-encoding.
 import { ponder } from "ponder:registry";
 import * as schema from "ponder:schema";
+import { join } from "node:path";
 import { decodeCctpHeader, messageHashOf, logRowId, dedupKey, serializeTopics } from "./lib/decode";
-import { hubDomain, networkName, watcherMode } from "./lib/manifests";
+import { hubDomain, watcherMode } from "./lib/manifests";
+
+// Deployments root (topology.json + manifests) — mirrors ponder.config's resolution.
+const deploymentsRoot =
+  process.env.DEPLOYMENTS_DIR ?? join(process.cwd(), "..", "..", "deployments");
+// Hub CCTP domain, resolved once: xchain_initiated rows carry no domain (destination is the hub).
+const HUB_DOMAIN = hubDomain(process.env, deploymentsRoot);
 
 type AnyEvent = {
   log: { logIndex: number; data: `0x${string}`; topics: readonly `0x${string}`[]; address: `0x${string}` };
@@ -116,7 +123,7 @@ if (poolIndexing) {
       id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
       chainId: context.chain.id,
       kind: "shield",
-      domain: hubDomain(networkName(process.env)), // event carries no domain; destination is the hub
+      domain: HUB_DOMAIN, // event carries no domain; destination is the hub
       amount: event.args.amount.toString(),
       nonce: event.args.nonce.toString(),
       txHash: event.transaction.hash,

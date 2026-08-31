@@ -134,7 +134,7 @@ describe.skipIf(!PG_URL)("postgres integration", () => {
     const checkpoint =
       "1750000000" + "0000000000031338" + "0000000000000200" + "0000000000000000" + "5" + "0000000000000000";
     await pool.query(
-      `INSERT INTO indexed."_ponder_checkpoint" VALUES ('clientA', 31338, $1, $1, $1)`,
+      `INSERT INTO indexed."_ponder_checkpoint" VALUES ('anvil-client-a', 31338, $1, $1, $1)`,
       [checkpoint],
     );
 

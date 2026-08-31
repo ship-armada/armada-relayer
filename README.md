@@ -30,6 +30,10 @@ cd armada-relayer
 cp relayer-v2/compose/secrets.env.example relayer-v2/compose/secrets.env
 # edit relayer-v2/compose/secrets.env
 
+# Provide per-chain RPC endpoints (one var per chain; uncomment the sepolia block)
+cp relayer-v2/compose/endpoints.env.example relayer-v2/compose/endpoints.env
+# edit relayer-v2/compose/endpoints.env
+
 # Pull images and start
 COMPOSE="docker compose -f relayer-v2/compose/docker-compose.yml \
   --env-file relayer-v2/compose/sepolia.env --env-file relayer-v2/compose/secrets.env"
@@ -53,9 +57,10 @@ proxy's address. Pin a specific build with `IMAGE_TAG=<git-sha>`.
 | `RELAYER_PRIVATE_KEY` | EOA that submits transactions and pays gas. |
 | `RELAYER_RAILGUN_MNEMONIC` | 12/24-word mnemonic for the 0zk fee wallet (boot-fails if absent). |
 | `POSTGRES_PASSWORD`, `WATCHER_DB_PASSWORD`, `ACTOR_DB_PASSWORD` | Database passwords (set before first boot — roles are created once). |
-| `HUB_RPC`, `CLIENT_A_RPC`, `CLIENT_B_RPC` | *(optional)* paid RPC URLs; the public fallbacks in `sepolia.env` work but rate-limit. |
 
-Everything else has defaults in `sepolia.env`. Full reference:
+Per-chain RPC URLs live in `endpoints.env` (one var per chain, named by `topology.json`'s
+`rpcUrlEnv`); the public defaults in `endpoints.env.example` work but rate-limit — prepend paid
+URLs for real throughput. Everything else has defaults in `sepolia.env`. Full reference:
 [`relayer-v2/README.md`](relayer-v2/README.md#env-reference).
 
 ## Local development

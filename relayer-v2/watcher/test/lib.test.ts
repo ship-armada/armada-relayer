@@ -98,8 +98,8 @@ describe("config derivation from manifests (§7.2)", () => {
     const chains = resolveChains(
       {
         NETWORK: "local",
-        HUB_RPC: "https://rpc-a.example, https://rpc-b.example ,wss://rpc-c.example",
-        CLIENT_A_RPC: "https://rpc-d.example",
+        ANVIL_HUB_RPC: "https://rpc-a.example, https://rpc-b.example ,wss://rpc-c.example",
+        ANVIL_CLIENT_A_RPC: "https://rpc-d.example",
       } as NodeJS.ProcessEnv,
       DEPLOYMENTS,
     );
@@ -115,10 +115,10 @@ describe("config derivation from manifests (§7.2)", () => {
   it("rejects RPC env vars that are only commas/whitespace", () => {
     expect(() =>
       resolveChains(
-        { NETWORK: "local", HUB_RPC: " , " } as NodeJS.ProcessEnv,
+        { NETWORK: "local", ANVIL_HUB_RPC: " , " } as NodeJS.ProcessEnv,
         DEPLOYMENTS,
       ),
-    ).toThrow(/Missing RPC URL.*HUB_RPC/);
+    ).toThrow(/Missing RPC URL.*ANVIL_HUB_RPC/);
   });
 
   it("resolves sepolia from the central registry (DEPLOYMENT_INSTANCE=demo1)", () => {
@@ -126,9 +126,9 @@ describe("config derivation from manifests (§7.2)", () => {
       {
         NETWORK: "sepolia",
         DEPLOYMENT_INSTANCE: "demo1",
-        HUB_RPC: "https://rpc",
-        CLIENT_A_RPC: "https://rpc",
-        CLIENT_B_RPC: "https://rpc",
+        ETHEREUM_SEPOLIA_RPC: "https://rpc",
+        BASE_SEPOLIA_RPC: "https://rpc",
+        ARBITRUM_SEPOLIA_RPC: "https://rpc",
       } as NodeJS.ProcessEnv,
       REPO_DEPLOYMENTS,
     );
@@ -149,9 +149,9 @@ describe("config derivation from manifests (§7.2)", () => {
         {
           NETWORK: "mainnet",
           DEPLOYMENT_INSTANCE: "does-not-exist",
-          HUB_RPC: "https://rpc",
-          CLIENT_A_RPC: "https://rpc",
-          CLIENT_B_RPC: "https://rpc",
+          ETHEREUM_RPC: "https://rpc",
+          BASE_RPC: "https://rpc",
+          ARBITRUM_RPC: "https://rpc",
         } as NodeJS.ProcessEnv,
         REPO_DEPLOYMENTS,
       ),
@@ -163,9 +163,9 @@ describe("config derivation from manifests (§7.2)", () => {
       resolveChains(
         {
           NETWORK: "mainnet",
-          HUB_RPC: "https://rpc",
-          CLIENT_A_RPC: "https://rpc",
-          CLIENT_B_RPC: "https://rpc",
+          ETHEREUM_RPC: "https://rpc",
+          BASE_RPC: "https://rpc",
+          ARBITRUM_RPC: "https://rpc",
         } as NodeJS.ProcessEnv,
         DEPLOYMENTS,
       ),
@@ -175,13 +175,36 @@ describe("config derivation from manifests (§7.2)", () => {
   it("missing RPC URLs fail loudly on non-local networks", () => {
     expect(() =>
       resolveChains({ NETWORK: "sepolia" } as NodeJS.ProcessEnv, DEPLOYMENTS),
-    ).toThrow(/HUB_RPC/);
+    ).toThrow(/ETHEREUM_SEPOLIA_RPC/);
   });
 
   it("rejects unknown NETWORK values", () => {
     expect(() => networkName({ NETWORK: "goerli" } as NodeJS.ProcessEnv)).toThrow(
       /local\|sepolia\|mainnet/,
     );
+  });
+
+  it("ENABLED_CLIENTS filters the resolved chains (hub always kept)", () => {
+    const chains = resolveChains(
+      { NETWORK: "local", ENABLED_CLIENTS: "anvil-client-b" } as NodeJS.ProcessEnv,
+      DEPLOYMENTS,
+    );
+    expect(chains.map((c) => c.chainId)).toEqual([31337, 31339]); // hub + selected client
+  });
+
+  it("ENABLED_CLIENTS with an unknown client name fails loudly", () => {
+    expect(() =>
+      resolveChains(
+        { NETWORK: "local", ENABLED_CLIENTS: "nope" } as NodeJS.ProcessEnv,
+        DEPLOYMENTS,
+      ),
+    ).toThrow(/unknown client "nope"/);
+  });
+
+  it("missing topology.json fails loudly", () => {
+    expect(() =>
+      resolveChains({ NETWORK: "local" } as NodeJS.ProcessEnv, "/no/such/dir"),
+    ).toThrow(/Missing topology file/);
   });
 
   it("builds the per-chain protocol address allowlist for /v1/logs (P1)", () => {
