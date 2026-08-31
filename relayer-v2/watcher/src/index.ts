@@ -3,7 +3,7 @@
 import { ponder } from "ponder:registry";
 import * as schema from "ponder:schema";
 import { decodeCctpHeader, messageHashOf, logRowId, dedupKey, serializeTopics } from "./lib/decode";
-import { hubDomain, networkName } from "./lib/manifests";
+import { hubDomain, networkName, watcherMode } from "./lib/manifests";
 
 type AnyEvent = {
   log: { logIndex: number; data: `0x${string}`; topics: readonly `0x${string}`[]; address: `0x${string}` };
@@ -30,105 +30,113 @@ async function recordRawLog(
     .onConflictDoNothing();
 }
 
-ponder.on("PrivacyPool:Shield", async ({ event, context }) => {
-  await context.db.insert(schema.commitmentBatch).values({
-    id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-    kind: "shield",
-    treeNumber: Number(event.args.treeNumber),
-    startPosition: Number(event.args.startPosition),
-    commitmentCount: event.args.commitments.length,
-    blockNumber: event.block.number,
-    txHash: event.transaction.hash,
-    logIndex: event.log.logIndex,
-    rawData: event.log.data,
-    rawTopics: serializeTopics(event.log.topics as string[]),
-  });
-  await recordRawLog(context, event as unknown as AnyEvent);
-});
+// Pool indexing (Railgun commitments/nullifiers/unshields + xchain rows) runs only in "full"
+// mode. cctp-only drops the pool contracts from ponder.config's runtime value, so registering
+// their handlers here would fail Ponder's contract↔handler validation at build — both sides read
+// watcherMode so they stay in lockstep. The CCTP handlers below always register.
+const poolIndexing = watcherMode(process.env) === "full";
 
-ponder.on("PrivacyPool:Transact", async ({ event, context }) => {
-  await context.db.insert(schema.commitmentBatch).values({
-    id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-    kind: "transact",
-    treeNumber: Number(event.args.treeNumber),
-    startPosition: Number(event.args.startPosition),
-    commitmentCount: event.args.hash.length,
-    blockNumber: event.block.number,
-    txHash: event.transaction.hash,
-    logIndex: event.log.logIndex,
-    rawData: event.log.data,
-    rawTopics: serializeTopics(event.log.topics as string[]),
-  });
-  await recordRawLog(context, event as unknown as AnyEvent);
-});
-
-ponder.on("PrivacyPool:Nullified", async ({ event, context }) => {
-  // One row per array element (§5.1).
-  for (let i = 0; i < event.args.nullifier.length; i++) {
-    await context.db.insert(schema.nullifier).values({
-      id: `${logRowId(context.chain.id, event.transaction.hash, event.log.logIndex)}:${i}`,
+if (poolIndexing) {
+  ponder.on("PrivacyPool:Shield", async ({ event, context }) => {
+    await context.db.insert(schema.commitmentBatch).values({
+      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+      kind: "shield",
       treeNumber: Number(event.args.treeNumber),
-      hash: event.args.nullifier[i]!,
+      startPosition: Number(event.args.startPosition),
+      commitmentCount: event.args.commitments.length,
       blockNumber: event.block.number,
       txHash: event.transaction.hash,
       logIndex: event.log.logIndex,
+      rawData: event.log.data,
+      rawTopics: serializeTopics(event.log.topics as string[]),
     });
-  }
-  await recordRawLog(context, event as unknown as AnyEvent);
-});
-
-ponder.on("PrivacyPool:Unshield", async ({ event, context }) => {
-  await context.db.insert(schema.unshield).values({
-    id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-    toAddress: event.args.to,
-    tokenAddress: event.args.token.tokenAddress,
-    amount: event.args.amount.toString(),
-    fee: event.args.fee.toString(),
-    blockNumber: event.block.number,
-    txHash: event.transaction.hash,
+    await recordRawLog(context, event as unknown as AnyEvent);
   });
-  await recordRawLog(context, event as unknown as AnyEvent);
-});
 
-ponder.on("PrivacyPool:CrossChainUnshieldInitiated", async ({ event, context }) => {
-  await context.db.insert(schema.xchainInitiated).values({
-    id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-    chainId: context.chain.id,
-    kind: "unshield",
-    domain: Number(event.args.destinationDomain),
-    amount: event.args.amount.toString(),
-    nonce: event.args.nonce.toString(),
-    txHash: event.transaction.hash,
-    blockNumber: event.block.number,
+  ponder.on("PrivacyPool:Transact", async ({ event, context }) => {
+    await context.db.insert(schema.commitmentBatch).values({
+      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+      kind: "transact",
+      treeNumber: Number(event.args.treeNumber),
+      startPosition: Number(event.args.startPosition),
+      commitmentCount: event.args.hash.length,
+      blockNumber: event.block.number,
+      txHash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      rawData: event.log.data,
+      rawTopics: serializeTopics(event.log.topics as string[]),
+    });
+    await recordRawLog(context, event as unknown as AnyEvent);
   });
-  await recordRawLog(context, event as unknown as AnyEvent);
-});
 
-ponder.on("PrivacyPoolClient:CrossChainShieldInitiated", async ({ event, context }) => {
-  await context.db.insert(schema.xchainInitiated).values({
-    id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-    chainId: context.chain.id,
-    kind: "shield",
-    domain: hubDomain(networkName(process.env)), // event carries no domain; destination is the hub
-    amount: event.args.amount.toString(),
-    nonce: event.args.nonce.toString(),
-    txHash: event.transaction.hash,
-    blockNumber: event.block.number,
+  ponder.on("PrivacyPool:Nullified", async ({ event, context }) => {
+    // One row per array element (§5.1).
+    for (let i = 0; i < event.args.nullifier.length; i++) {
+      await context.db.insert(schema.nullifier).values({
+        id: `${logRowId(context.chain.id, event.transaction.hash, event.log.logIndex)}:${i}`,
+        treeNumber: Number(event.args.treeNumber),
+        hash: event.args.nullifier[i]!,
+        blockNumber: event.block.number,
+        txHash: event.transaction.hash,
+        logIndex: event.log.logIndex,
+      });
+    }
+    await recordRawLog(context, event as unknown as AnyEvent);
   });
-  await recordRawLog(context, event as unknown as AnyEvent);
-});
 
-ponder.on("PrivacyPoolClient:UnshieldReceived", async ({ event, context }) => {
-  await context.db.insert(schema.unshieldReceived).values({
-    id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-    chainId: context.chain.id,
-    recipient: event.args.recipient,
-    amount: event.args.amount.toString(),
-    txHash: event.transaction.hash,
-    blockNumber: event.block.number,
+  ponder.on("PrivacyPool:Unshield", async ({ event, context }) => {
+    await context.db.insert(schema.unshield).values({
+      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+      toAddress: event.args.to,
+      tokenAddress: event.args.token.tokenAddress,
+      amount: event.args.amount.toString(),
+      fee: event.args.fee.toString(),
+      blockNumber: event.block.number,
+      txHash: event.transaction.hash,
+    });
+    await recordRawLog(context, event as unknown as AnyEvent);
   });
-  await recordRawLog(context, event as unknown as AnyEvent);
-});
+
+  ponder.on("PrivacyPool:CrossChainUnshieldInitiated", async ({ event, context }) => {
+    await context.db.insert(schema.xchainInitiated).values({
+      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+      chainId: context.chain.id,
+      kind: "unshield",
+      domain: Number(event.args.destinationDomain),
+      amount: event.args.amount.toString(),
+      nonce: event.args.nonce.toString(),
+      txHash: event.transaction.hash,
+      blockNumber: event.block.number,
+    });
+    await recordRawLog(context, event as unknown as AnyEvent);
+  });
+
+  ponder.on("PrivacyPoolClient:CrossChainShieldInitiated", async ({ event, context }) => {
+    await context.db.insert(schema.xchainInitiated).values({
+      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+      chainId: context.chain.id,
+      kind: "shield",
+      domain: hubDomain(networkName(process.env)), // event carries no domain; destination is the hub
+      amount: event.args.amount.toString(),
+      nonce: event.args.nonce.toString(),
+      txHash: event.transaction.hash,
+      blockNumber: event.block.number,
+    });
+    await recordRawLog(context, event as unknown as AnyEvent);
+  });
+
+  ponder.on("PrivacyPoolClient:UnshieldReceived", async ({ event, context }) => {
+    await context.db.insert(schema.unshieldReceived).values({
+      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+      chainId: context.chain.id,
+      recipient: event.args.recipient,
+      amount: event.args.amount.toString(),
+      txHash: event.transaction.hash,
+      blockNumber: event.block.number,
+    });
+    await recordRawLog(context, event as unknown as AnyEvent);
+  });
+}
 
 ponder.on("MessageTransmitter:MessageSent", async ({ event, context }) => {
   const message = event.args.message;

@@ -59,6 +59,26 @@ export function networkName(env: NodeJS.ProcessEnv): NetworkName {
   return network;
 }
 
+export type WatcherMode = "full" | "cctp-only";
+
+/**
+ * Watcher run mode. "full" (default) indexes the privacy pools from deployBlock — the backfill
+ * that powers quick-sync and the pool read endpoints — alongside forward-only CCTP. "cctp-only"
+ * is the lean relay posture: the watcher indexes ONLY the CCTP MessageTransmitter (from "latest"),
+ * doing no pool backfill or indexing and serving no quick-sync. The relay path is unaffected — the
+ * actor reads CCTP messages, never pool data — so cctp-only trades away quick-sync/pool reads for a
+ * node that reaches chain head immediately instead of after a full pool backfill. Set via
+ * WATCHER_MODE; ponder.config (contract set) and src/index (handler registration) both read this so
+ * they can never disagree about which contracts exist.
+ */
+export function watcherMode(env: NodeJS.ProcessEnv): WatcherMode {
+  // Compose passes unset vars as empty strings (`${VAR:-}`), so treat "" as unset (default full).
+  const raw = env.WATCHER_MODE;
+  if (raw === undefined || raw === "") return "full";
+  if (raw === "full" || raw === "cctp-only") return raw;
+  throw new Error(`WATCHER_MODE must be "full" or "cctp-only", got ${JSON.stringify(raw)}`);
+}
+
 /** Manifest source: central registry (armada-deployments) or flat local files (monorepo e2e). */
 export type DeploymentSource =
   | { kind: "flat"; root: string }

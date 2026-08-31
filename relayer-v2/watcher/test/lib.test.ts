@@ -12,6 +12,7 @@ import {
   cctpStartBlock,
   hookRouterAddress,
   messageTransmitterChain,
+  watcherMode,
 } from "../src/lib/manifests";
 import {
   parseRangeParams,
@@ -188,6 +189,29 @@ describe("config derivation from manifests (§7.2)", () => {
     const allowlist = protocolAddressAllowlist(chains);
     expect(allowlist.get(31337)!.has("0x5fbdb2315678afecb367f032d93f642f64180aa3")).toBe(true);
     expect(allowlist.get(31337)!.has("0x" + "99".repeat(20))).toBe(false);
+  });
+});
+
+describe("watcherMode (run-mode selection)", () => {
+  it("defaults to full when unset", () => {
+    expect(watcherMode({} as NodeJS.ProcessEnv)).toBe("full");
+  });
+
+  it("treats an empty-string env var as unset (compose ${VAR:-} convention)", () => {
+    expect(watcherMode({ WATCHER_MODE: "" } as unknown as NodeJS.ProcessEnv)).toBe("full");
+  });
+
+  it("reads the explicit full and cctp-only values", () => {
+    expect(watcherMode({ WATCHER_MODE: "full" } as unknown as NodeJS.ProcessEnv)).toBe("full");
+    expect(
+      watcherMode({ WATCHER_MODE: "cctp-only" } as unknown as NodeJS.ProcessEnv),
+    ).toBe("cctp-only");
+  });
+
+  it("rejects an unknown mode loudly", () => {
+    expect(() =>
+      watcherMode({ WATCHER_MODE: "relay" } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(/WATCHER_MODE/);
   });
 });
 

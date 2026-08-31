@@ -43,6 +43,9 @@ services:
     # paid key (§11.1) — provide them via HUB_RPC / CLIENT_A_RPC / CLIENT_B_RPC (v1 names).
     environment:
       NETWORK: ${NETWORK:-local}
+      # full (default) indexes the pools + serves quick-sync; cctp-only indexes just the CCTP
+      # transmitter (no pool backfill/indexing, no quick-sync) for a lean relay-only node.
+      WATCHER_MODE: ${WATCHER_MODE:-full}
       DATABASE_URL: postgres://watcher_rw:${WATCHER_DB_PASSWORD}@postgres:5432/armada
       DATABASE_SCHEMA: watcher
       VIEWS_SCHEMA: indexed
