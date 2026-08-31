@@ -81,6 +81,16 @@
         "pollingIntervalMs": 5000,
         "confirmations": 2,
         "nominalBlockTimeMs": 250
+      },
+      {
+        "chainId": 11155420,
+        "name": "optimism-sepolia",
+        "domain": 2,
+        "rpcUrlEnv": "OPTIMISM_SEPOLIA_RPC",
+        "manifestPrefix": "clientC",
+        "pollingIntervalMs": 5000,
+        "confirmations": 2,
+        "nominalBlockTimeMs": 2000
       }
     ]
   },
