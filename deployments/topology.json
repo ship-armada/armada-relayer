@@ -1,0 +1,123 @@
+{
+  "$comment": [
+    "ABOUTME: Network topology for the relayer (spec §7.2) — the single source of truth for which",
+    "ABOUTME: chains exist per network and their fixed properties. Addresses live in the manifests.",
+    "One hub + N clients per network. To add a client: append an entry to that network's `clients`",
+    "array (chainId, CCTP domain, an rpcUrlEnv naming its endpoint var, poll cadence, confirmations,",
+    "manifestPrefix = the monorepo flat-manifest filename stem). To run a subset of the configured",
+    "clients, set ENABLED_CLIENTS (comma-separated chain `name`s); unset = all clients. The hub is",
+    "always included. Both the watcher and actor read this file at boot from ${DEPLOYMENTS_DIR}.",
+    "rpcUrlEnv convention: <SLUG_UPPERCASE>_RPC. Endpoint values are supplied via env (endpoints.env)."
+  ],
+  "local": {
+    "irisMode": "mock",
+    "irisBaseUrl": null,
+    "hub": {
+      "chainId": 31337,
+      "name": "anvil-hub",
+      "domain": 100,
+      "rpcUrlEnv": "ANVIL_HUB_RPC",
+      "defaultRpcUrl": "http://127.0.0.1:8545",
+      "manifestPrefix": "hub",
+      "pollingIntervalMs": 1000,
+      "confirmations": 0,
+      "nominalBlockTimeMs": 1000
+    },
+    "clients": [
+      {
+        "chainId": 31338,
+        "name": "anvil-client-a",
+        "domain": 101,
+        "rpcUrlEnv": "ANVIL_CLIENT_A_RPC",
+        "defaultRpcUrl": "http://127.0.0.1:8546",
+        "manifestPrefix": "client",
+        "pollingIntervalMs": 1000,
+        "confirmations": 0,
+        "nominalBlockTimeMs": 1000
+      },
+      {
+        "chainId": 31339,
+        "name": "anvil-client-b",
+        "domain": 102,
+        "rpcUrlEnv": "ANVIL_CLIENT_B_RPC",
+        "defaultRpcUrl": "http://127.0.0.1:8547",
+        "manifestPrefix": "clientB",
+        "pollingIntervalMs": 1000,
+        "confirmations": 0,
+        "nominalBlockTimeMs": 1000
+      }
+    ]
+  },
+  "sepolia": {
+    "irisMode": "iris",
+    "irisBaseUrl": "https://iris-api-sandbox.circle.com",
+    "hub": {
+      "chainId": 11155111,
+      "name": "ethereum-sepolia",
+      "domain": 0,
+      "rpcUrlEnv": "ETHEREUM_SEPOLIA_RPC",
+      "manifestPrefix": "hub",
+      "pollingIntervalMs": 12000,
+      "confirmations": 6,
+      "nominalBlockTimeMs": 12000
+    },
+    "clients": [
+      {
+        "chainId": 84532,
+        "name": "base-sepolia",
+        "domain": 6,
+        "rpcUrlEnv": "BASE_SEPOLIA_RPC",
+        "manifestPrefix": "client",
+        "pollingIntervalMs": 5000,
+        "confirmations": 2,
+        "nominalBlockTimeMs": 2000
+      },
+      {
+        "chainId": 421614,
+        "name": "arbitrum-sepolia",
+        "domain": 3,
+        "rpcUrlEnv": "ARBITRUM_SEPOLIA_RPC",
+        "manifestPrefix": "clientB",
+        "pollingIntervalMs": 5000,
+        "confirmations": 2,
+        "nominalBlockTimeMs": 250
+      }
+    ]
+  },
+  "mainnet": {
+    "irisMode": "iris",
+    "irisBaseUrl": "https://iris-api.circle.com",
+    "hub": {
+      "chainId": 1,
+      "name": "ethereum",
+      "domain": 0,
+      "rpcUrlEnv": "ETHEREUM_RPC",
+      "manifestPrefix": "hub",
+      "pollingIntervalMs": 12000,
+      "confirmations": 6,
+      "nominalBlockTimeMs": 12000
+    },
+    "clients": [
+      {
+        "chainId": 8453,
+        "name": "base",
+        "domain": 6,
+        "rpcUrlEnv": "BASE_RPC",
+        "manifestPrefix": "client",
+        "pollingIntervalMs": 5000,
+        "confirmations": 2,
+        "nominalBlockTimeMs": 2000
+      },
+      {
+        "chainId": 42161,
+        "name": "arbitrum-one",
+        "domain": 3,
+        "rpcUrlEnv": "ARBITRUM_RPC",
+        "manifestPrefix": "clientB",
+        "pollingIntervalMs": 5000,
+        "confirmations": 2,
+        "nominalBlockTimeMs": 250
+      }
+    ]
+  }
+}

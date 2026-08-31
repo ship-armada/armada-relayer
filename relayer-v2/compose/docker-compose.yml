@@ -39,8 +39,9 @@ services:
         condition: service_healthy
     ports:
       - "42069:42069"
-    # D2/S1: NO secret env vars are passed to the watcher container. RPC URLs may embed a
-    # paid key (§11.1) — provide them via HUB_RPC / CLIENT_A_RPC / CLIENT_B_RPC (v1 names).
+    # D2/S1: NO secret keys reach the watcher container. Per-chain RPC endpoints (which may embed
+    # a paid key, §11.1) are the one exception the watcher needs; they arrive via the endpoints.env
+    # env_file below — one var per chain, named by that chain's rpcUrlEnv in topology.json.
     environment:
       NETWORK: ${NETWORK:-local}
       # full (default) indexes the pools + serves quick-sync; cctp-only indexes just the CCTP
@@ -53,9 +54,13 @@ services:
       # Registry instance (unset ⇒ flat local manifests). Root defaults to /deployments/registry.
       DEPLOYMENT_INSTANCE: ${DEPLOYMENT_INSTANCE:-}
       DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-}
-      HUB_RPC: ${HUB_RPC:-}
-      CLIENT_A_RPC: ${CLIENT_A_RPC:-}
-      CLIENT_B_RPC: ${CLIENT_B_RPC:-}
+      # Subset of the configured clients to run (comma-separated chain names); unset ⇒ all.
+      ENABLED_CLIENTS: ${ENABLED_CLIENTS:-}
+    # Per-chain RPC endpoints (endpoints.env; gitignored). env_file injects every var it holds, so
+    # adding a client never needs a compose edit — just a new line here and in topology.json.
+    env_file:
+      - path: ./endpoints.env
+        required: false
     volumes:
       - ../../deployments:/deployments:ro
     extra_hosts:
@@ -95,6 +100,8 @@ services:
       DEPLOYMENTS_DIR: /deployments
       DEPLOYMENT_INSTANCE: ${DEPLOYMENT_INSTANCE:-}
       DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-}
+      # Subset of the configured clients to run (comma-separated chain names); unset ⇒ all.
+      ENABLED_CLIENTS: ${ENABLED_CLIENTS:-}
       RAILGUN_DB_PATH: /state/railgun-db
       ACTOR_PORT: "${ACTOR_PORT:-3001}"
       ETH_USD_PRICE_STATIC: ${ETH_USD_PRICE_STATIC:?}
@@ -105,12 +112,13 @@ services:
       RELAYER_PRIVATE_KEY: ${RELAYER_PRIVATE_KEY:-}
       RELAYER_RAILGUN_MNEMONIC: ${RELAYER_RAILGUN_MNEMONIC:-}
       BROADCASTER_RAILGUN_ADDRESS: ${BROADCASTER_RAILGUN_ADDRESS:-}
-      HUB_RPC: ${HUB_RPC:-}
-      CLIENT_A_RPC: ${CLIENT_A_RPC:-}
-      CLIENT_B_RPC: ${CLIENT_B_RPC:-}
-    # Secrets ONLY here (D2/S1): RELAYER_PRIVATE_KEY, RELAYER_RAILGUN_MNEMONIC,
-    # optional BROADCASTER_RAILGUN_ADDRESS. File is gitignored.
+    # Per-chain RPC endpoints (endpoints.env) + actor secrets (secrets.env) — both gitignored and
+    # injected via env_file, so adding a client needs no compose edit (just a new line in
+    # endpoints.env + topology.json). endpoints.env carries RPC only; the private key + mnemonic
+    # (D2/S1) live in secrets.env, which ONLY the actor reads.
     env_file:
+      - path: ./endpoints.env
+        required: false
       - path: ./secrets.env
         required: false
     volumes:

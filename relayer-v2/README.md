@@ -36,6 +36,7 @@ watcher (Ponder, :42069)  ──writes──►  Postgres 16  ◄──reads/wri
 # Prereqs: Anvil chains on the host (monorepo `npm run chains` + `npm run setup`);
 # point DEPLOYMENTS_DIR at the monorepo's deployments/ (local manifests are generated
 # there by `npm run setup` as privacy-pool-{hub,client,clientB}.json).
+cp relayer-v2/compose/endpoints.env.example relayer-v2/compose/endpoints.env  # local block points at host Anvil
 npm run relayer-v2          # docker compose up --build (postgres + watcher + actor)
 # with observability (local-only per ruling §17.2.3):
 docker compose -f relayer-v2/compose/docker-compose.yml -f relayer-v2/compose/docker-compose.obs.yml \
@@ -57,7 +58,9 @@ building on the box:
 
 ```bash
 git submodule update --init deployments/registry   # central deployment registry (§7.2)
-cp relayer-v2/compose/secrets.env.example relayer-v2/compose/secrets.env  # fill in
+cp relayer-v2/compose/secrets.env.example relayer-v2/compose/secrets.env      # keys — fill in
+cp relayer-v2/compose/endpoints.env.example relayer-v2/compose/endpoints.env  # RPC — uncomment sepolia block
+# select a subset of clients (optional; unset ⇒ all): export ENABLED_CLIENTS=base-sepolia,arbitrum-sepolia
 # GHCR images are private by default — either make the packages public, or log in first:
 #   echo <PAT-with-read:packages> | docker login ghcr.io -u <user> --password-stdin
 npm run relayer-v2:sepolia   # docker compose pull && up -d; sepolia.env sets DEPLOYMENT_INSTANCE=demo1
@@ -93,6 +96,41 @@ Switching an existing deployment into (or out of) `cctp-only` changes the watche
 contract set, so Ponder treats it as a fresh app and re-indexes from the CCTP start block — expected,
 since cctp-only carries no pool history to preserve.
 
+## Chain topology (one hub + N clients)
+
+The protocol is one hub chain plus any number of client chains. Which chains exist per network —
+and their fixed properties — is data, not code: `deployments/topology.json` is the single source
+of truth, read at boot by both the watcher and actor. Addresses still come from the deployment
+manifests (registry or flat files); topology carries chain identity and cadence.
+
+Each network has a `hub` and a `clients` array. A client entry:
+
+```json
+{
+  "chainId": 84532,
+  "name": "base-sepolia",           // stable identifier; used by ENABLED_CLIENTS and as the
+                                     // watcher's Ponder network id
+  "domain": 6,                       // CCTP domain
+  "rpcUrlEnv": "BASE_SEPOLIA_RPC",   // env var holding this chain's RPC URL(s)
+  "manifestPrefix": "client",        // flat-manifest filename stem: privacy-pool-<prefix>{-env}.json
+  "pollingIntervalMs": 5000,
+  "confirmations": 2,
+  "nominalBlockTimeMs": 2000
+}
+```
+
+**Add a client:** append an entry to that network's `clients` array, set its `rpcUrlEnv` line in
+`endpoints.env`, and publish its deployment manifest (registry instance or flat file). No code or
+compose changes are needed — `env_file` injects any number of RPC vars.
+
+**Run a subset:** set `ENABLED_CLIENTS` to a comma-separated list of client `name`s (the hub is
+always included). Unset ⇒ all configured clients. An unknown name boot-fails loudly. Example — run
+only Base on sepolia:
+
+```bash
+ENABLED_CLIENTS=base-sepolia npm run relayer-v2:sepolia
+```
+
 ## Env reference
 
 | Variable | Where | Default | Notes |
@@ -100,9 +138,10 @@ since cctp-only carries no pool history to preserve.
 | `NETWORK` (alias `DEPLOY_ENV`) | both | `local` | `local\|sepolia\|mainnet` (§7.2) |
 | `CCTP_MODE` | actor | `mock` local, `real` else | v1 semantics; mainnet+mock forbidden |
 | `DATABASE_URL` | both | — | per-role URLs in compose (`watcher_rw` / `actor_rw`, §5) |
-| `HUB_RPC` / `CLIENT_A_RPC` / `CLIENT_B_RPC` | both | local defaults only | v1 names; for sepolia/mainnet set ONLY in `secrets.env` (§11.1) as comma-separated lists — watcher pools all URLs, actor uses the first |
+| per-chain RPC (e.g. `ETHEREUM_SEPOLIA_RPC`, `BASE_SEPOLIA_RPC`) | both | topology default | each chain names its own RPC var (`rpcUrlEnv` in `topology.json`); set them in `endpoints.env` as comma-separated lists — watcher pools all URLs, actor uses the first |
+| `ENABLED_CLIENTS` | both | all clients | comma-separated chain names selecting a subset of the configured clients (hub always included); unknown name boot-fails |
 | `IRIS_API_URL` | actor | per network (§7.2) | override the Iris base URL |
-| `DEPLOYMENTS_DIR` | both | `../../deployments` | manifest root; registry defaults to `<dir>/registry` (§7.2) |
+| `DEPLOYMENTS_DIR` | both | `../../deployments` | manifest + `topology.json` root; registry defaults to `<dir>/registry` (§7.2) |
 | `DEPLOYMENT_INSTANCE` | both | — (flat files) | registry instance, e.g. `demo1`; unset ⇒ flat local manifests |
 | `DEPLOYMENT_ENVIRONMENT` | both | per network | registry env dir (`testnet`/`mainnet`); derived from `NETWORK` |
 | `DEPLOYMENT_REGISTRY_DIR` | both | `<DEPLOYMENTS_DIR>/registry` | override the registry root explicitly |

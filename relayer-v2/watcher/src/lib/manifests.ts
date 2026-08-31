@@ -9,7 +9,7 @@ export interface WatcherChain {
   chainId: number;
   name: string;
   role: "hub" | "client";
-  manifestPrefix: "hub" | "client" | "clientB";
+  manifestPrefix: string; // monorepo flat-manifest filename stem (hub / client / clientB / ...)
   domain: number;
   rpcUrlEnv: string;
   defaultRpcUrl?: string;
@@ -17,23 +17,134 @@ export interface WatcherChain {
   confirmations: number;
 }
 
-const CHAINS: Record<NetworkName, WatcherChain[]> = {
-  local: [
-    { chainId: 31337, name: "hub", role: "hub", manifestPrefix: "hub", domain: 100, rpcUrlEnv: "HUB_RPC", defaultRpcUrl: "http://127.0.0.1:8545", pollingIntervalMs: 1000, confirmations: 0 },
-    { chainId: 31338, name: "clientA", role: "client", manifestPrefix: "client", domain: 101, rpcUrlEnv: "CLIENT_A_RPC", defaultRpcUrl: "http://127.0.0.1:8546", pollingIntervalMs: 1000, confirmations: 0 },
-    { chainId: 31339, name: "clientB", role: "client", manifestPrefix: "clientB", domain: 102, rpcUrlEnv: "CLIENT_B_RPC", defaultRpcUrl: "http://127.0.0.1:8547", pollingIntervalMs: 1000, confirmations: 0 },
-  ],
-  sepolia: [
-    { chainId: 11155111, name: "hub", role: "hub", manifestPrefix: "hub", domain: 0, rpcUrlEnv: "HUB_RPC", pollingIntervalMs: 12000, confirmations: 6 },
-    { chainId: 84532, name: "clientA", role: "client", manifestPrefix: "client", domain: 6, rpcUrlEnv: "CLIENT_A_RPC", pollingIntervalMs: 5000, confirmations: 2 },
-    { chainId: 421614, name: "clientB", role: "client", manifestPrefix: "clientB", domain: 3, rpcUrlEnv: "CLIENT_B_RPC", pollingIntervalMs: 5000, confirmations: 2 },
-  ],
-  mainnet: [
-    { chainId: 1, name: "hub", role: "hub", manifestPrefix: "hub", domain: 0, rpcUrlEnv: "HUB_RPC", pollingIntervalMs: 12000, confirmations: 6 },
-    { chainId: 8453, name: "clientA", role: "client", manifestPrefix: "client", domain: 6, rpcUrlEnv: "CLIENT_A_RPC", pollingIntervalMs: 5000, confirmations: 2 },
-    { chainId: 42161, name: "clientB", role: "client", manifestPrefix: "clientB", domain: 3, rpcUrlEnv: "CLIENT_B_RPC", pollingIntervalMs: 5000, confirmations: 2 },
-  ],
-};
+/** File name of the topology document within the deployments root (spec §7.2). */
+export const TOPOLOGY_FILE = "topology.json";
+
+/** Raw per-chain shape in topology.json (role assigned by position; extra fields ignored —
+ * e.g. the actor-only nominalBlockTimeMs). */
+interface RawChain {
+  chainId: number;
+  name: string;
+  domain: number;
+  rpcUrlEnv: string;
+  defaultRpcUrl?: string;
+  manifestPrefix: string;
+  pollingIntervalMs: number;
+  confirmations: number;
+}
+interface RawNetwork {
+  hub: RawChain;
+  clients: RawChain[];
+}
+type TopologyFile = Record<string, RawNetwork>;
+
+// topology.json never changes during a run; cache the parse so hubDomain (called per event
+// in the indexing handlers) does not re-read the file on every log.
+const topologyCache = new Map<string, TopologyFile>();
+
+function loadTopologyFile(deploymentsRoot: string): TopologyFile {
+  const path = join(deploymentsRoot, TOPOLOGY_FILE);
+  const cached = topologyCache.get(path);
+  if (cached) return cached;
+  if (!existsSync(path)) {
+    throw new Error(
+      `Missing topology file: expected ${path}. topology.json is the single source of truth ` +
+        `for which chains exist per network (spec §7.2); refusing to boot without one.`,
+    );
+  }
+  let file: TopologyFile;
+  try {
+    file = JSON.parse(readFileSync(path, "utf8")) as TopologyFile;
+  } catch (err) {
+    throw new Error(`Unparseable topology file ${path}: ${(err as Error).message}`);
+  }
+  topologyCache.set(path, file);
+  return file;
+}
+
+function toWatcherChain(raw: RawChain, role: "hub" | "client", network: string): WatcherChain {
+  const fail = (msg: string): never => {
+    throw new Error(`Invalid topology (network=${network}, role=${role}): ${msg}`);
+  };
+  const int = (v: unknown, key: string): number => {
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 0) {
+      fail(`${key} must be a non-negative integer, got ${JSON.stringify(v)}`);
+    }
+    return v as number;
+  };
+  const str = (v: unknown, key: string): string => {
+    if (typeof v !== "string" || v.length === 0) fail(`${key} must be a non-empty string`);
+    return v as string;
+  };
+  return {
+    chainId: int(raw.chainId, "chainId"),
+    name: str(raw.name, "name"),
+    role,
+    manifestPrefix: str(raw.manifestPrefix, "manifestPrefix"),
+    domain: int(raw.domain, "domain"),
+    rpcUrlEnv: str(raw.rpcUrlEnv, "rpcUrlEnv"),
+    defaultRpcUrl: raw.defaultRpcUrl,
+    pollingIntervalMs: int(raw.pollingIntervalMs, "pollingIntervalMs"),
+    confirmations: int(raw.confirmations, "confirmations"),
+  };
+}
+
+function rawNetwork(
+  env: NodeJS.ProcessEnv,
+  deploymentsRoot: string,
+): { network: NetworkName; raw: RawNetwork } {
+  const network = networkName(env);
+  const raw = loadTopologyFile(deploymentsRoot)[network];
+  if (!raw) throw new Error(`topology.json has no entry for NETWORK=${network}`);
+  if (!raw.hub) throw new Error(`topology.json ${network} entry is missing a hub`);
+  if (!Array.isArray(raw.clients)) {
+    throw new Error(`topology.json ${network} clients must be an array`);
+  }
+  return { network, raw };
+}
+
+/** ENABLED_CLIENTS (comma-separated chain names); undefined ⇒ all clients. Compose passes
+ * unset vars as empty strings (`${VAR:-}`), so "" is treated as unset. */
+function enabledClients(env: NodeJS.ProcessEnv): string[] | undefined {
+  const raw = env.ENABLED_CLIENTS;
+  if (raw === undefined || raw.trim() === "") return undefined;
+  return [...new Set(raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0))];
+}
+
+function selectClients(
+  clients: WatcherChain[],
+  enabled: string[] | undefined,
+  network: string,
+): WatcherChain[] {
+  if (enabled === undefined) return clients;
+  const byName = new Map(clients.map((c) => [c.name, c]));
+  const selected = enabled.map((name) => {
+    const chain = byName.get(name);
+    if (!chain) {
+      throw new Error(
+        `ENABLED_CLIENTS names unknown client ${JSON.stringify(name)} for NETWORK=${network}; ` +
+          `available: ${clients.map((c) => c.name).join(", ")}`,
+      );
+    }
+    return chain;
+  });
+  if (selected.length === 0) {
+    throw new Error(`ENABLED_CLIENTS selected no clients for NETWORK=${network}`);
+  }
+  return selected;
+}
+
+/** The active chain topology (hub + selected clients) for this watcher, from topology.json. */
+export function topologyChains(env: NodeJS.ProcessEnv, deploymentsRoot: string): WatcherChain[] {
+  const { network, raw } = rawNetwork(env, deploymentsRoot);
+  const hub = toWatcherChain(raw.hub, "hub", network);
+  const clients = selectClients(
+    raw.clients.map((c) => toWatcherChain(c, "client", network)),
+    enabledClients(env),
+    network,
+  );
+  return [hub, ...clients];
+}
 
 /** Real manifest shape written by the monorepo's scripts/deploy_privacy_pool.ts. */
 export interface Manifest {
@@ -150,14 +261,15 @@ function registryManifestPath(
 
 /** Hub CCTP domain for the network (used for xchain_initiated shield rows, which carry
  * no domain in the event — the destination is always the hub). */
-export function hubDomain(network: NetworkName): number {
-  return CHAINS[network][0]!.domain;
+export function hubDomain(env: NodeJS.ProcessEnv, deploymentsRoot: string): number {
+  const { network, raw } = rawNetwork(env, deploymentsRoot);
+  return toWatcherChain(raw.hub, "hub", network).domain;
 }
 
 export function resolveChains(env: NodeJS.ProcessEnv, deploymentsRoot: string): ResolvedChain[] {
   const network = networkName(env);
   const source = resolveSource(env, deploymentsRoot);
-  return CHAINS[network].map((chain) => {
+  return topologyChains(env, deploymentsRoot).map((chain) => {
     // Comma-separated lists are supported so free-tier providers can be pooled; Ponder
     // treats each URL as an independent rate-limit bucket and fails over on the first 429.
     const rpcUrls = (env[chain.rpcUrlEnv] ?? chain.defaultRpcUrl ?? "")

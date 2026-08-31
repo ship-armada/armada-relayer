@@ -3,7 +3,13 @@
 import { describe, it, expect } from "vitest";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getTopology, assertDomainPairing, allChains } from "../src/config/networks.js";
+import {
+  buildNetworkTopology,
+  loadTopologyFile,
+  selectClients,
+  assertDomainPairing,
+  allChains,
+} from "../src/config/networks.js";
 import {
   loadAllManifests,
   loadYieldManifest,
@@ -18,6 +24,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, "fixtures", "deployments");
 // The central registry submodule — the real published manifests (testnet/demo1).
 const REGISTRY_ROOT = join(HERE, "..", "..", "..", "deployments", "registry");
+// Repo deployments root — holds the committed topology.json (single source of topology truth).
+const DEPLOYMENTS_ROOT = join(HERE, "..", "..", "..", "deployments");
+const TOPOLOGY = loadTopologyFile(DEPLOYMENTS_ROOT);
+/** Full (unfiltered) topology for a network, from the committed topology.json. */
+const topo = (network: string) => buildNetworkTopology(TOPOLOGY, network);
 
 const flat = (root: string): DeploymentSource => ({ kind: "flat", root });
 const demo1 = (): DeploymentSource => ({
@@ -35,7 +46,7 @@ const BASE_ENV = {
 
 describe("network topology (§7.2 table)", () => {
   it("local: hub 31337 domain 100, clients 31338/101 and 31339/102, mock mode", () => {
-    const t = getTopology("local");
+    const t = topo("local");
     expect(t.hub).toMatchObject({ chainId: 31337, domain: 100, manifestPrefix: "hub" });
     expect(t.clients.map((c) => [c.chainId, c.domain, c.manifestPrefix])).toEqual([
       [31338, 101, "client"],
@@ -44,7 +55,7 @@ describe("network topology (§7.2 table)", () => {
   });
 
   it("sepolia: 11155111/0, 84532/6, 421614/3, sandbox iris", () => {
-    const t = getTopology("sepolia");
+    const t = topo("sepolia");
     expect(t.hub).toMatchObject({ chainId: 11155111, domain: 0 });
     expect(t.clients.map((c) => [c.chainId, c.domain])).toEqual([
       [84532, 6],
@@ -54,7 +65,7 @@ describe("network topology (§7.2 table)", () => {
   });
 
   it("mainnet: 1/0, 8453/6, 42161/3, prod iris — config posture builds (§15.4)", () => {
-    const t = getTopology("mainnet");
+    const t = topo("mainnet");
     expect(t.hub).toMatchObject({ chainId: 1, domain: 0 });
     expect(t.clients.map((c) => [c.chainId, c.domain])).toEqual([
       [8453, 6],
@@ -66,20 +77,20 @@ describe("network topology (§7.2 table)", () => {
 
   it("all three networks pass domain-pairing validation", () => {
     for (const network of ["local", "sepolia", "mainnet"] as const) {
-      expect(() => assertDomainPairing(getTopology(network))).not.toThrow();
+      expect(() => assertDomainPairing(topo(network))).not.toThrow();
     }
   });
 
   it("rejects unknown network names", () => {
-    expect(() => getTopology("goerli")).toThrow(/local\|sepolia\|mainnet/);
+    expect(() => topo("goerli")).toThrow(/local\|sepolia\|mainnet/);
   });
 
   it("poll intervals and confirmation depths per §7.2", () => {
-    expect(getTopology("local").hub.pollingIntervalMs).toBe(1000);
-    const sepolia = getTopology("sepolia");
+    expect(topo("local").hub.pollingIntervalMs).toBe(1000);
+    const sepolia = topo("sepolia");
     expect(sepolia.hub.pollingIntervalMs).toBe(12000);
     expect(sepolia.clients.every((c) => c.pollingIntervalMs === 5000)).toBe(true);
-    expect(allChains(getTopology("local")).every((c) => c.confirmations === 0)).toBe(true);
+    expect(allChains(topo("local")).every((c) => c.confirmations === 0)).toBe(true);
     expect(sepolia.hub.confirmations).toBe(6);
     expect(sepolia.clients.every((c) => c.confirmations === 2)).toBe(true);
   });
@@ -129,13 +140,13 @@ describe("manifest source selection (resolveDeploymentSource)", () => {
 
 describe("flat provider (local / monorepo e2e)", () => {
   it("loads the fixture local manifests (hub pool + client pools + cctp block)", () => {
-    const all = loadAllManifests(flat(FIXTURES), getTopology("local"));
+    const all = loadAllManifests(flat(FIXTURES), topo("local"));
     expect(all).toHaveLength(3);
     expect(all[0]!.manifest.contracts.privacyPool).toMatch(/^0x/);
     expect(all[1]!.manifest.contracts.privacyPoolClient).toMatch(/^0x/);
     expect(all[0]!.manifest.cctp.messageTransmitter).toMatch(/^0x/);
     expect(gaslessWrapperAddress(all[0]!)).toMatch(/^0x/);
-    expect(loadYieldManifest(flat(FIXTURES), getTopology("local"))!.contracts.armadaYieldAdapter)
+    expect(loadYieldManifest(flat(FIXTURES), topo("local"))!.contracts.armadaYieldAdapter)
       .toMatch(/^0x/);
   });
 
@@ -146,13 +157,13 @@ describe("flat provider (local / monorepo e2e)", () => {
   });
 
   it("missing flat manifest fails loudly", () => {
-    expect(() => loadAllManifests(flat("/no/such/dir"), getTopology("local"))).toThrow(
+    expect(() => loadAllManifests(flat("/no/such/dir"), topo("local"))).toThrow(
       /Missing deployment manifest/,
     );
   });
 
   it("rejects manifests whose chainId disagrees with the topology", () => {
-    const t = getTopology("local");
+    const t = topo("local");
     const skewed = { ...t, hub: { ...t.hub, chainId: 99999 }, clients: [] };
     expect(() => loadAllManifests(flat(FIXTURES), skewed)).toThrow(/chainId/);
   });
@@ -160,7 +171,7 @@ describe("flat provider (local / monorepo e2e)", () => {
 
 describe("registry provider (central armada-deployments submodule)", () => {
   it("resolves demo1's sepolia hub + clients by chainId, with real addresses + deployBlock", () => {
-    const all = loadAllManifests(demo1(), getTopology("sepolia"));
+    const all = loadAllManifests(demo1(), topo("sepolia"));
     expect(all[0]!.manifest.contracts.privacyPool).toBe(
       "0x014aC1dfC2Bde83d4be2CFFb5bea4dE942DAD77F",
     );
@@ -172,7 +183,7 @@ describe("registry provider (central armada-deployments submodule)", () => {
       domain: 0,
       privacyPool: "0x014aC1dfC2Bde83d4be2CFFb5bea4dE942DAD77F",
     });
-    expect(loadYieldManifest(demo1(), getTopology("sepolia"))!.contracts.armadaYieldAdapter).toBe(
+    expect(loadYieldManifest(demo1(), topo("sepolia"))!.contracts.armadaYieldAdapter).toBe(
       "0x148A6A4588062dB433Fa8847017DB42bAc506458",
     );
   });
@@ -184,14 +195,14 @@ describe("registry provider (central armada-deployments submodule)", () => {
       environment: "mainnet",
       instance: "does-not-exist",
     };
-    expect(() => loadAllManifests(src, getTopology("mainnet"))).toThrow(
+    expect(() => loadAllManifests(src, topo("mainnet"))).toThrow(
       /Missing deployment registry instance.*mainnet\/does-not-exist\/manifest\.json/s,
     );
   });
 
   it("fails loudly when the instance lacks a topology chainId (demo1 has no mainnet chains)", () => {
     // demo1 is a testnet instance; loading it against the mainnet topology (chainId 1) must fail.
-    expect(() => loadAllManifests(demo1(), getTopology("mainnet"))).toThrow(/chainId 1/);
+    expect(() => loadAllManifests(demo1(), topo("mainnet"))).toThrow(/chainId 1/);
   });
 });
 
@@ -212,14 +223,14 @@ describe("buildConfig", () => {
     expect(config.bodyLimitBytes).toBe(256 * 1024);
   });
 
-  it("honors HUB_RPC/CLIENT_A_RPC/CLIENT_B_RPC and DEPLOY_ENV aliases", () => {
+  it("honors per-chain rpcUrlEnv (topology.json) and the DEPLOY_ENV alias", () => {
     const config = buildConfig(
       {
         DEPLOY_ENV: "local",
         DATABASE_URL: "postgres://x",
         ETH_USD_PRICE_STATIC: "3000",
-        HUB_RPC: "http://hub:1111",
-        CLIENT_A_RPC: "http://a:2222",
+        ANVIL_HUB_RPC: "http://hub:1111",
+        ANVIL_CLIENT_A_RPC: "http://a:2222",
       } as NodeJS.ProcessEnv,
       FIXTURES,
     );
@@ -234,7 +245,7 @@ describe("buildConfig", () => {
     const config = buildConfig(
       {
         ...BASE_ENV,
-        HUB_RPC: " http://hub:1111 , http://hub:2222",
+        ANVIL_HUB_RPC: " http://hub:1111 , http://hub:2222",
       } as NodeJS.ProcessEnv,
       FIXTURES,
     );
@@ -243,8 +254,8 @@ describe("buildConfig", () => {
 
   it("rejects RPC env vars that are only commas/whitespace", () => {
     expect(() =>
-      buildConfig({ ...BASE_ENV, HUB_RPC: " , " } as NodeJS.ProcessEnv, FIXTURES),
-    ).toThrow(/Missing RPC URL.*HUB_RPC/);
+      buildConfig({ ...BASE_ENV, ANVIL_HUB_RPC: " , " } as NodeJS.ProcessEnv, FIXTURES),
+    ).toThrow(/Missing RPC URL.*ANVIL_HUB_RPC/);
   });
 
   it("CCTP_MODE: local defaults to mock; mainnet+mock is forbidden", () => {
@@ -281,9 +292,9 @@ describe("buildConfig", () => {
           NETWORK: "sepolia",
           DATABASE_URL: "postgres://x",
           ETH_USD_PRICE_STATIC: "3000",
-          HUB_RPC: "https://rpc",
-          CLIENT_A_RPC: "https://rpc",
-          CLIENT_B_RPC: "https://rpc",
+          ETHEREUM_SEPOLIA_RPC: "https://rpc",
+          BASE_SEPOLIA_RPC: "https://rpc",
+          ARBITRUM_SEPOLIA_RPC: "https://rpc",
         } as NodeJS.ProcessEnv,
         FIXTURES,
       ),
@@ -316,6 +327,52 @@ describe("buildConfig", () => {
         } as NodeJS.ProcessEnv,
         FIXTURES,
       ),
-    ).toThrow(/HUB_RPC/);
+    ).toThrow(/ETHEREUM_SEPOLIA_RPC/);
+  });
+});
+
+describe("client subset selection (ENABLED_CLIENTS)", () => {
+  it("unset ⇒ all clients; hub always included", () => {
+    const config = buildConfig(BASE_ENV as NodeJS.ProcessEnv, FIXTURES);
+    expect(config.topology.hub.chainId).toBe(31337);
+    expect(config.topology.clients.map((c) => c.chainId)).toEqual([31338, 31339]);
+  });
+
+  it("selects a subset by chain name (order follows ENABLED_CLIENTS)", () => {
+    const config = buildConfig(
+      { ...BASE_ENV, ENABLED_CLIENTS: "anvil-client-b" } as NodeJS.ProcessEnv,
+      FIXTURES,
+    );
+    expect(config.topology.hub.chainId).toBe(31337); // hub always present
+    expect(config.topology.clients.map((c) => c.chainId)).toEqual([31339]);
+    // manifests + RPC maps follow the filtered topology (no client-a entries)
+    expect(config.rpcUrls.has(31338)).toBe(false);
+    expect(config.deployments.map((d) => d.chain.chainId).sort()).toEqual([31337, 31339]);
+  });
+
+  it("empty string ⇒ unset (compose passes ${VAR:-} as '')", () => {
+    const config = buildConfig(
+      { ...BASE_ENV, ENABLED_CLIENTS: "" } as NodeJS.ProcessEnv,
+      FIXTURES,
+    );
+    expect(config.topology.clients.map((c) => c.chainId)).toEqual([31338, 31339]);
+  });
+
+  it("an unknown client name fails loudly", () => {
+    expect(() =>
+      buildConfig({ ...BASE_ENV, ENABLED_CLIENTS: "does-not-exist" } as NodeJS.ProcessEnv, FIXTURES),
+    ).toThrow(/unknown client "does-not-exist"/);
+  });
+
+  it("selectClients filters sepolia clients by name and rejects unknown", () => {
+    const t = topo("sepolia");
+    expect(selectClients(t.clients, ["arbitrum-sepolia"], "sepolia").map((c) => c.name)).toEqual([
+      "arbitrum-sepolia",
+    ]);
+    expect(() => selectClients(t.clients, ["mars"], "sepolia")).toThrow(/unknown client "mars"/);
+  });
+
+  it("missing topology file fails loudly", () => {
+    expect(() => loadTopologyFile("/no/such/dir")).toThrow(/Missing topology file/);
   });
 });

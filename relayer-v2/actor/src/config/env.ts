@@ -1,5 +1,5 @@
 // ABOUTME: Assembles the actor runtime configuration from NETWORK + env vars + manifests using
-// ABOUTME: v1's env-var names (HUB_RPC/CLIENT_A_RPC/CLIENT_B_RPC, CCTP_MODE, RELAYER_*), boot-fail rules.
+// ABOUTME: per-chain RPC vars (topology.json rpcUrlEnv), CCTP_MODE, RELAYER_* env names, boot-fail rules.
 import type { NetworkTopology } from "./networks.js";
 import { assertDomainPairing, getTopology, allChains } from "./networks.js";
 import { join } from "node:path";
@@ -99,9 +99,9 @@ function num(env: NodeJS.ProcessEnv, keys: string | string[], dflt: number, min?
 }
 
 export function buildConfig(env: NodeJS.ProcessEnv, deploymentsRoot: string): ActorConfig {
-  // NETWORK is the v2 spec name; DEPLOY_ENV is v1's — accept both.
-  const network = env.NETWORK ?? env.DEPLOY_ENV ?? "local";
-  const topology = getTopology(network);
+  // NETWORK is the v2 spec name; DEPLOY_ENV is v1's — accept both (validated in getTopology).
+  const topology = getTopology(env, deploymentsRoot);
+  const network = topology.network;
   assertDomainPairing(topology);
 
   // CCTP_MODE per v1 config: mock|real; mainnet+mock is forbidden.

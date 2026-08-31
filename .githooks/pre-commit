@@ -8,6 +8,7 @@ ALLOWED_ENV_FILES=(
   "relayer-v2/compose/sepolia.env"
   "relayer-v2/compose/mainnet.env"
   "relayer-v2/compose/secrets.env.example"
+  "relayer-v2/compose/endpoints.env.example"
 )
 
 staged=$(git diff --cached --name-only --diff-filter=ACM)

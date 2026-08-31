@@ -3,6 +3,16 @@
 Deployment manifests — the single source of truth for contract addresses and `deployBlock`
 (spec §7.2). **v2 consumes the central registry, not files committed here.**
 
+## `topology.json` — chain topology (committed here)
+
+The single source of truth for **which chains exist per network** and their fixed properties
+(chainId, CCTP domain, poll cadence, confirmations, the RPC env var name, and the flat-manifest
+`manifestPrefix`). One hub + N clients per network. Both the watcher and actor read it at boot
+from `DEPLOYMENTS_DIR`; unlike the manifests it is committed in this repo (it carries no secrets
+and no addresses). Adding a client is a topology entry plus its manifest and RPC endpoint — no
+code changes. `ENABLED_CLIENTS` (comma-separated chain names) selects a subset at boot; the hub
+is always included. See the "Chain topology" section of `relayer-v2/README.md`.
+
 ## `registry/` — git submodule → [ship-armada/armada-deployments](https://github.com/ship-armada/armada-deployments)
 
 Pinned to a commit; bump = update the submodule pointer in a reviewable commit.
