@@ -22,6 +22,10 @@ import {
   type RawLogRow,
 } from "./lib/quick-sync-decode";
 import { initPoseidonWasm } from "./lib/poseidon";
+import {
+  serializeNativeQuickSync,
+  NATIVE_QUICK_SYNC_SCHEMA_VERSION,
+} from "./lib/quick-sync-native";
 import { deployedCommit } from "./lib/build-info";
 
 // Max block window served per quick-sync page (whole blocks; caller paginates by servedThroughBlock).
@@ -222,6 +226,78 @@ app.get("/v1/quick-sync/:chainId", async (c) => {
     servedThroughBlock: Number(windowEnd), // caller resumes at windowEnd + 1 while < indexedThrough
     indexedThrough: Number(through),
   });
+});
+
+// Native quick-sync (§7.3, interim): the SAME stored hub logs served in the @armada/sdk wire shape its
+// IndexerEventSource expects (schemaVersion + syncedThroughBlock + flat shields/transacts/nullifiers/
+// unshields), so the interface's SDK sync verifies the batch instead of RPC-falling-back. Additive
+// alongside /v1 as a stopgap; the definitive native-only cutover (import @armada/sdk, drop the engine
+// shape) is #26. The SDK passes its own fromBlock/toBlock window; we serve up to indexedThrough and it
+// RPC-covers any tail past syncedThroughBlock.
+app.get("/v2/quick-sync/:chainId", async (c) => {
+  if (!poolReadsEnabled) {
+    return c.json({ error: "quick-sync is unavailable: watcher running in cctp-only mode" }, 501);
+  }
+  const chainId = Number(c.req.param("chainId"));
+  if (!Number.isInteger(chainId) || chainId !== hub.chainId) {
+    return c.json(
+      { error: `quick-sync is only served for the hub chain ${hub.chainId} (Railgun events)` },
+      400,
+    );
+  }
+  const fromBlockRaw = c.req.query("fromBlock");
+  const toBlockRaw = c.req.query("toBlock");
+  const fromBlock = Number(fromBlockRaw);
+  const toBlock = Number(toBlockRaw);
+  if (fromBlockRaw === undefined || !Number.isInteger(fromBlock) || fromBlock < 0) {
+    return c.json({ error: "fromBlock is required and must be a non-negative integer" }, 400);
+  }
+  if (toBlockRaw === undefined || !Number.isInteger(toBlock) || toBlock < 0) {
+    return c.json({ error: "toBlock is required and must be a non-negative integer" }, 400);
+  }
+  if (toBlock < fromBlock) {
+    return c.json({ error: "toBlock must be >= fromBlock" }, 400);
+  }
+  await initPoseidonWasm(); // idempotent; needed for shield commitment hashes
+  const through = await indexedThrough(hub.chainId);
+  if (through === null || BigInt(fromBlock) > through) {
+    // Nothing indexed in the caller's window — report "covered nothing here" (syncedThroughBlock
+    // just below fromBlock) so the SDK RPC-covers the whole [fromBlock, toBlock] cleanly.
+    c.header("cache-control", "public, max-age=5");
+    return c.json({
+      schemaVersion: NATIVE_QUICK_SYNC_SCHEMA_VERSION,
+      syncedThroughBlock: Math.max(0, fromBlock - 1),
+      shields: [],
+      transacts: [],
+      nullifiers: [],
+      unshields: [],
+    });
+  }
+
+  // Serve up to the caller's toBlock but never past what we've indexed; the SDK RPC-covers the tail.
+  const syncedThroughBlock = Math.min(Number(through), toBlock);
+  const windowEnd = BigInt(syncedThroughBlock);
+  const dbRows = await db
+    .select()
+    .from(schema.rawEventLog)
+    .where(
+      and(
+        eq(schema.rawEventLog.chainId, hub.chainId),
+        eq(schema.rawEventLog.address, HUB_POOL_ADDRESS),
+        gte(schema.rawEventLog.blockNumber, BigInt(fromBlock)),
+        lte(schema.rawEventLog.blockNumber, windowEnd),
+      ),
+    )
+    .orderBy(asc(schema.rawEventLog.blockNumber), asc(schema.rawEventLog.logIndex));
+  const rows: RawLogRow[] = dbRows.map((r) => ({
+    blockNumber: r.blockNumber,
+    txHash: r.txHash,
+    logIndex: r.logIndex,
+    data: r.data,
+    topics: JSON.parse(r.topics) as string[],
+  }));
+  c.header("cache-control", cacheControlFor(windowEnd, through, hub.confirmations));
+  return c.json(serializeNativeQuickSync(rows, syncedThroughBlock));
 });
 
 app.get("/v1/logs", async (c) => {
