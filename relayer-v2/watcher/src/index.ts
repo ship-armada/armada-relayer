@@ -45,102 +45,125 @@ const poolIndexing = watcherMode(process.env) === "full";
 
 if (poolIndexing) {
   ponder.on("PrivacyPool:Shield", async ({ event, context }) => {
-    await context.db.insert(schema.commitmentBatch).values({
-      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-      kind: "shield",
-      treeNumber: Number(event.args.treeNumber),
-      startPosition: Number(event.args.startPosition),
-      commitmentCount: event.args.commitments.length,
-      blockNumber: event.block.number,
-      txHash: event.transaction.hash,
-      logIndex: event.log.logIndex,
-      rawData: event.log.data,
-      rawTopics: serializeTopics(event.log.topics as string[]),
-    });
+    await context.db
+      .insert(schema.commitmentBatch)
+      .values({
+        id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+        kind: "shield",
+        treeNumber: Number(event.args.treeNumber),
+        startPosition: Number(event.args.startPosition),
+        commitmentCount: event.args.commitments.length,
+        blockNumber: event.block.number,
+        txHash: event.transaction.hash,
+        logIndex: event.log.logIndex,
+        rawData: event.log.data,
+        rawTopics: serializeTopics(event.log.topics as string[]),
+      })
+      // Reorg reconciliation can re-run a handler for an already-flushed event; the
+      // (txHash:logIndex) key can only ever carry identical data, so ignore the re-insert.
+      .onConflictDoNothing();
     await recordRawLog(context, event as unknown as AnyEvent);
   });
 
   ponder.on("PrivacyPool:Transact", async ({ event, context }) => {
-    await context.db.insert(schema.commitmentBatch).values({
-      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-      kind: "transact",
-      treeNumber: Number(event.args.treeNumber),
-      startPosition: Number(event.args.startPosition),
-      commitmentCount: event.args.hash.length,
-      blockNumber: event.block.number,
-      txHash: event.transaction.hash,
-      logIndex: event.log.logIndex,
-      rawData: event.log.data,
-      rawTopics: serializeTopics(event.log.topics as string[]),
-    });
+    await context.db
+      .insert(schema.commitmentBatch)
+      .values({
+        id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+        kind: "transact",
+        treeNumber: Number(event.args.treeNumber),
+        startPosition: Number(event.args.startPosition),
+        commitmentCount: event.args.hash.length,
+        blockNumber: event.block.number,
+        txHash: event.transaction.hash,
+        logIndex: event.log.logIndex,
+        rawData: event.log.data,
+        rawTopics: serializeTopics(event.log.topics as string[]),
+      })
+      .onConflictDoNothing();
     await recordRawLog(context, event as unknown as AnyEvent);
   });
 
   ponder.on("PrivacyPool:Nullified", async ({ event, context }) => {
     // One row per array element (§5.1).
     for (let i = 0; i < event.args.nullifier.length; i++) {
-      await context.db.insert(schema.nullifier).values({
-        id: `${logRowId(context.chain.id, event.transaction.hash, event.log.logIndex)}:${i}`,
-        treeNumber: Number(event.args.treeNumber),
-        hash: event.args.nullifier[i]!,
-        blockNumber: event.block.number,
-        txHash: event.transaction.hash,
-        logIndex: event.log.logIndex,
-      });
+      await context.db
+        .insert(schema.nullifier)
+        .values({
+          id: `${logRowId(context.chain.id, event.transaction.hash, event.log.logIndex)}:${i}`,
+          treeNumber: Number(event.args.treeNumber),
+          hash: event.args.nullifier[i]!,
+          blockNumber: event.block.number,
+          txHash: event.transaction.hash,
+          logIndex: event.log.logIndex,
+        })
+        .onConflictDoNothing();
     }
     await recordRawLog(context, event as unknown as AnyEvent);
   });
 
   ponder.on("PrivacyPool:Unshield", async ({ event, context }) => {
-    await context.db.insert(schema.unshield).values({
-      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-      toAddress: event.args.to,
-      tokenAddress: event.args.token.tokenAddress,
-      amount: event.args.amount.toString(),
-      fee: event.args.fee.toString(),
-      blockNumber: event.block.number,
-      txHash: event.transaction.hash,
-    });
+    await context.db
+      .insert(schema.unshield)
+      .values({
+        id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+        toAddress: event.args.to,
+        tokenAddress: event.args.token.tokenAddress,
+        amount: event.args.amount.toString(),
+        fee: event.args.fee.toString(),
+        blockNumber: event.block.number,
+        txHash: event.transaction.hash,
+      })
+      .onConflictDoNothing();
     await recordRawLog(context, event as unknown as AnyEvent);
   });
 
   ponder.on("PrivacyPool:CrossChainUnshieldInitiated", async ({ event, context }) => {
-    await context.db.insert(schema.xchainInitiated).values({
-      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-      chainId: context.chain.id,
-      kind: "unshield",
-      domain: Number(event.args.destinationDomain),
-      amount: event.args.amount.toString(),
-      nonce: event.args.nonce.toString(),
-      txHash: event.transaction.hash,
-      blockNumber: event.block.number,
-    });
+    await context.db
+      .insert(schema.xchainInitiated)
+      .values({
+        id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+        chainId: context.chain.id,
+        kind: "unshield",
+        domain: Number(event.args.destinationDomain),
+        amount: event.args.amount.toString(),
+        nonce: event.args.nonce.toString(),
+        txHash: event.transaction.hash,
+        blockNumber: event.block.number,
+      })
+      .onConflictDoNothing();
     await recordRawLog(context, event as unknown as AnyEvent);
   });
 
   ponder.on("PrivacyPoolClient:CrossChainShieldInitiated", async ({ event, context }) => {
-    await context.db.insert(schema.xchainInitiated).values({
-      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-      chainId: context.chain.id,
-      kind: "shield",
-      domain: HUB_DOMAIN, // event carries no domain; destination is the hub
-      amount: event.args.amount.toString(),
-      nonce: event.args.nonce.toString(),
-      txHash: event.transaction.hash,
-      blockNumber: event.block.number,
-    });
+    await context.db
+      .insert(schema.xchainInitiated)
+      .values({
+        id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+        chainId: context.chain.id,
+        kind: "shield",
+        domain: HUB_DOMAIN, // event carries no domain; destination is the hub
+        amount: event.args.amount.toString(),
+        nonce: event.args.nonce.toString(),
+        txHash: event.transaction.hash,
+        blockNumber: event.block.number,
+      })
+      .onConflictDoNothing();
     await recordRawLog(context, event as unknown as AnyEvent);
   });
 
   ponder.on("PrivacyPoolClient:UnshieldReceived", async ({ event, context }) => {
-    await context.db.insert(schema.unshieldReceived).values({
-      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-      chainId: context.chain.id,
-      recipient: event.args.recipient,
-      amount: event.args.amount.toString(),
-      txHash: event.transaction.hash,
-      blockNumber: event.block.number,
-    });
+    await context.db
+      .insert(schema.unshieldReceived)
+      .values({
+        id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+        chainId: context.chain.id,
+        recipient: event.args.recipient,
+        amount: event.args.amount.toString(),
+        txHash: event.transaction.hash,
+        blockNumber: event.block.number,
+      })
+      .onConflictDoNothing();
     await recordRawLog(context, event as unknown as AnyEvent);
   });
 }
@@ -153,30 +176,36 @@ ponder.on("MessageTransmitter:MessageSent", async ({ event, context }) => {
   } catch {
     return; // not a CCTP V2 message; nothing to index
   }
-  await context.db.insert(schema.cctpMessageSent).values({
-    id: dedupKey(event.transaction.hash, event.log.logIndex), // v1 dedupKey convention (§3)
-    chainId: context.chain.id,
-    sourceDomain: header.sourceDomain,
-    destinationDomain: header.destinationDomain,
-    messageBytes: message,
-    messageHash: messageHashOf(message),
-    sourceTxHash: event.transaction.hash,
-    logIndex: event.log.logIndex,
-    blockNumber: event.block.number,
-    blockTimestamp: event.block.timestamp,
-  });
+  await context.db
+    .insert(schema.cctpMessageSent)
+    .values({
+      id: dedupKey(event.transaction.hash, event.log.logIndex), // v1 dedupKey convention (§3)
+      chainId: context.chain.id,
+      sourceDomain: header.sourceDomain,
+      destinationDomain: header.destinationDomain,
+      messageBytes: message,
+      messageHash: messageHashOf(message),
+      sourceTxHash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      blockNumber: event.block.number,
+      blockTimestamp: event.block.timestamp,
+    })
+    .onConflictDoNothing();
   await recordRawLog(context, event as unknown as AnyEvent);
 });
 
 ponder.on("MessageTransmitter:MessageReceived", async ({ event, context }) => {
-  await context.db.insert(schema.cctpMessageReceived).values({
-    id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
-    chainId: context.chain.id,
-    sourceDomain: Number(event.args.sourceDomain),
-    nonce: event.args.nonce,
-    caller: event.args.caller,
-    destinationTxHash: event.transaction.hash,
-    blockNumber: event.block.number,
-  });
+  await context.db
+    .insert(schema.cctpMessageReceived)
+    .values({
+      id: logRowId(context.chain.id, event.transaction.hash, event.log.logIndex),
+      chainId: context.chain.id,
+      sourceDomain: Number(event.args.sourceDomain),
+      nonce: event.args.nonce,
+      caller: event.args.caller,
+      destinationTxHash: event.transaction.hash,
+      blockNumber: event.block.number,
+    })
+    .onConflictDoNothing();
   await recordRawLog(context, event as unknown as AnyEvent);
 });
