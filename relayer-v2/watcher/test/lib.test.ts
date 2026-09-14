@@ -13,6 +13,8 @@ import {
   hookRouterAddress,
   messageTransmitterChain,
   watcherMode,
+  chainMaxRequestsPerSecond,
+  DEFAULT_MAX_REQUESTS_PER_SECOND,
 } from "../src/lib/manifests";
 import {
   parseRangeParams,
@@ -339,6 +341,48 @@ describe("messageTransmitterChain (assembled CCTP per-chain Ponder config)", () 
       chain,
     );
     expect(cfg.startBlock).toBe(8000000);
+  });
+});
+
+describe("chainMaxRequestsPerSecond (Ponder per-chain RPC rate ceiling)", () => {
+  const localChain = () =>
+    resolveChains({ NETWORK: "local" } as NodeJS.ProcessEnv, DEPLOYMENTS)[0]!;
+
+  it("defaults to DEFAULT_MAX_REQUESTS_PER_SECOND when unset", () => {
+    expect(chainMaxRequestsPerSecond({} as NodeJS.ProcessEnv, localChain())).toBe(
+      DEFAULT_MAX_REQUESTS_PER_SECOND,
+    );
+  });
+
+  it("reads a positive integer from MAX_RPS_<chainId>", () => {
+    expect(
+      chainMaxRequestsPerSecond(
+        { MAX_RPS_31337: "50" } as unknown as NodeJS.ProcessEnv,
+        localChain(),
+      ),
+    ).toBe(50);
+  });
+
+  it("treats an empty-string env var as unset (compose ${VAR:-} convention)", () => {
+    expect(
+      chainMaxRequestsPerSecond(
+        { MAX_RPS_31337: "" } as unknown as NodeJS.ProcessEnv,
+        localChain(),
+      ),
+    ).toBe(DEFAULT_MAX_REQUESTS_PER_SECOND);
+  });
+
+  it("rejects a non-positive / non-integer override loudly", () => {
+    const chain = localChain();
+    expect(() =>
+      chainMaxRequestsPerSecond({ MAX_RPS_31337: "0" } as unknown as NodeJS.ProcessEnv, chain),
+    ).toThrow(/MAX_RPS_31337/);
+    expect(() =>
+      chainMaxRequestsPerSecond({ MAX_RPS_31337: "-5" } as unknown as NodeJS.ProcessEnv, chain),
+    ).toThrow(/MAX_RPS_31337/);
+    expect(() =>
+      chainMaxRequestsPerSecond({ MAX_RPS_31337: "2.5" } as unknown as NodeJS.ProcessEnv, chain),
+    ).toThrow(/MAX_RPS_31337/);
   });
 });
 

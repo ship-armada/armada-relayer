@@ -333,6 +333,35 @@ export function cctpStartBlock(env: NodeJS.ProcessEnv, chain: ResolvedChain): nu
   return "latest";
 }
 
+/** Default Ponder per-chain RPC request ceiling when MAX_RPS_<chainId> is unset. Ponder issues
+ * both historical-backfill and realtime-poll requests through one per-chain queue; with no cap it
+ * bursts up to the provider's limit, trips 429s, and viem's retry/backoff then stalls the realtime
+ * poll behind backing-off backfill — which lets the checkpoint fall behind head and flip /health to
+ * `stale`. A ceiling under the provider's sustained limit keeps the poll flowing. 25 is a
+ * conservative default for a keyed provider; tune per chain via MAX_RPS_<chainId>. */
+export const DEFAULT_MAX_REQUESTS_PER_SECOND = 25;
+
+/**
+ * Per-chain client-side RPC request-rate ceiling handed to Ponder's chain config
+ * (`maxRequestsPerSecond`). Precedence: MAX_RPS_<chainId> env override > DEFAULT_MAX_REQUESTS_PER_SECOND.
+ * Applies to ALL of that chain's requests (backfill + realtime), not a subset — Ponder exposes one
+ * ceiling per chain. See DEFAULT_MAX_REQUESTS_PER_SECOND for why capping keeps freshness up.
+ */
+export function chainMaxRequestsPerSecond(env: NodeJS.ProcessEnv, chain: ResolvedChain): number {
+  // Compose passes unset vars as empty strings (`${VAR:-}`), so treat "" as unset like cctpStartBlock.
+  const raw = env[`MAX_RPS_${chain.chainId}`];
+  if (raw !== undefined && raw !== "") {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n <= 0) {
+      throw new Error(
+        `MAX_RPS_${chain.chainId} must be a positive integer, got ${JSON.stringify(raw)}`,
+      );
+    }
+    return n;
+  }
+  return DEFAULT_MAX_REQUESTS_PER_SECOND;
+}
+
 /**
  * The chain's CCTP HookRouter address (lowercased), or null if the manifest carries none.
  * Destination relays route through this contract (actor destination-submitter calls
