@@ -2,7 +2,12 @@
 // ABOUTME: chains from NETWORK env, addresses/startBlock never hardcoded, per-chain poll cadence.
 import { createConfig } from "ponder";
 import { join } from "node:path";
-import { resolveChains, messageTransmitterChain, watcherMode } from "./src/lib/manifests";
+import {
+  resolveChains,
+  messageTransmitterChain,
+  watcherMode,
+  chainMaxRequestsPerSecond,
+} from "./src/lib/manifests";
 import { PrivacyPoolAbi } from "./abis/PrivacyPool";
 import { PrivacyPoolClientAbi } from "./abis/PrivacyPoolClient";
 import { MessageTransmitterAbi } from "./abis/MessageTransmitter";
@@ -19,6 +24,9 @@ const chains = Object.fromEntries(
     {
       id: c.chainId,
       rpc: c.rpcUrls,
+      // Cap the per-chain request rate so backfill never bursts past the provider's limit and
+      // stalls the realtime poll behind 429 retry/backoff (which would flip /health to `stale`).
+      maxRequestsPerSecond: chainMaxRequestsPerSecond(process.env, c),
       pollingInterval: Number(process.env[`POLLING_INTERVAL_${c.chainId}`] ?? c.pollingIntervalMs),
     },
   ]),

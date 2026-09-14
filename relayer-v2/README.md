@@ -166,6 +166,7 @@ ENABLED_CLIENTS=base-sepolia npm run relayer-v2:sepolia
 | `INDEXED_SCHEMA` | actor | `indexed` | watcher's published views schema |
 | `DATABASE_SCHEMA` / `VIEWS_SCHEMA` | watcher | `watcher` / `indexed` | Ponder schemas (§5) |
 | `POLLING_INTERVAL_<chainId>` | watcher | §7.2 table | override poll cadence |
+| `MAX_RPS_<chainId>` | watcher | 25 | Ponder per-chain RPC request-rate ceiling; raise toward the keyed provider's limit, lower to stay under a free-tier cap |
 | `WATCHER_MODE` | watcher | `full` | `full\|cctp-only`; cctp-only indexes only the CCTP transmitter (no pool backfill/indexing, no quick-sync) — see Run modes |
 
 Repo conventions: every committed env template is listed in `.gitignore` (`!` negations)
