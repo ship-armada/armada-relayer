@@ -24,8 +24,8 @@ export class NonceCoordinator {
 
   /**
    * Runs fn with the chain's next nonce, serialized against all other submissions on that
-   * chain. The nonce advances only if fn resolves (successful broadcast); a rejection
-   * leaves the stream where it was so the nonce is reused.
+   * chain. The nonce advances only if fn resolves (successful broadcast). A nonce-expired
+   * rejection forces the next submission to re-seed; other rejections reuse the nonce.
    */
   async withNonce<T>(chainId: number, fn: (nonce: number) => Promise<T>): Promise<T> {
     const s = this.stream(chainId);
@@ -33,9 +33,19 @@ export class NonceCoordinator {
       async () => {
         if (s.next === null) s.next = await this.seed(chainId);
         const nonce = s.next;
-        const result = await fn(nonce);
-        s.next = nonce + 1;
-        return result;
+        try {
+          const result = await fn(nonce);
+          s.next = nonce + 1;
+          return result;
+        } catch (error) {
+          if (
+            typeof error === "object" && error !== null &&
+            "code" in error && error.code === "NONCE_EXPIRED"
+          ) {
+            s.next = null;
+          }
+          throw error;
+        }
       },
       // keep serialization even if a predecessor rejected
     );

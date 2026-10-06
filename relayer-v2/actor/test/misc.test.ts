@@ -73,6 +73,67 @@ describe("NonceCoordinator (§6.5)", () => {
     expect(seen).toBe(0);
   });
 
+  it("re-seeds queued submissions after the chain rejects an externally consumed nonce", async () => {
+    let pending = 1551;
+    let seedCalls = 0;
+    const coordinator = new NonceCoordinator(async () => {
+      seedCalls++;
+      return pending;
+    });
+    await coordinator.withNonce(1, async () => {});
+    pending = 1624; // deployment transactions used the relayer's cached nonce
+    const stale = Object.assign(new Error("nonce has already been used"), {
+      code: "NONCE_EXPIRED",
+    });
+    const seen: number[] = [];
+    const rejected = coordinator.withNonce(1, async (nonce) => {
+      seen.push(nonce);
+      throw stale;
+    });
+    const next = coordinator.withNonce(1, async (nonce) => seen.push(nonce));
+    const following = coordinator.withNonce(1, async (nonce) => seen.push(nonce));
+    await expect(rejected).rejects.toBe(stale);
+    await Promise.all([next, following]);
+    expect(seen).toEqual([1552, 1624, 1625]);
+    expect(seedCalls).toBe(2);
+  });
+
+  it("does not discard a nonce after a network error with an uncertain broadcast outcome", async () => {
+    let seedCalls = 0;
+    const coordinator = new NonceCoordinator(async () => {
+      seedCalls++;
+      return 7;
+    });
+    const uncertain = Object.assign(new Error("connection closed"), { code: "NETWORK_ERROR" });
+    await expect(coordinator.withNonce(1, async () => { throw uncertain; })).rejects.toBe(uncertain);
+    let seen = -1;
+    await coordinator.withNonce(1, async (nonce) => { seen = nonce; });
+    expect(seen).toBe(7);
+    expect(seedCalls).toBe(1);
+  });
+
+  it("re-seeds only the chain that rejected a stale nonce", async () => {
+    const pending = new Map([[1, 10], [2, 20]]);
+    const seeds: number[] = [];
+    const coordinator = new NonceCoordinator(async (chainId) => {
+      seeds.push(chainId);
+      return pending.get(chainId)!;
+    });
+    await coordinator.withNonce(1, async () => {});
+    await coordinator.withNonce(2, async () => {});
+    pending.set(1, 30);
+    pending.set(2, 40);
+    await expect(coordinator.withNonce(1, async () => {
+      throw Object.assign(new Error("nonce too low"), { code: "NONCE_EXPIRED" });
+    })).rejects.toThrow("nonce too low");
+    const seen = await Promise.all([
+      coordinator.withNonce(1, async (nonce) => nonce),
+      coordinator.withNonce(2, async (nonce) => nonce),
+    ]);
+    expect(seen).toEqual([30, 21]);
+    expect(seeds).toEqual([1, 2, 1]);
+  });
+
   it("reset re-seeds the stream (stuck-tx recovery)", async () => {
     let seed = 5;
     const coordinator = new NonceCoordinator(async () => seed);
